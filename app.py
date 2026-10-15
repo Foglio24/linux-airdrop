@@ -616,7 +616,7 @@ class AirDrop(Adw.Application):
 
     def show_about(self, *_):
         about = Adw.AboutDialog(application_name="Linux AirDrop", application_icon=APP_ID, developer_name="foglio",
-                                version="1.0", license_type=Gtk.License.GPL_3_0,
+                                version="1.0.0", license_type=Gtk.License.GPL_3_0,
                                 comments="Scambia file con iPhone e iPad dal menu AirDrop, sul tuo PC Linux con scheda MediaTek MT7921/MT7922.",
                                 website="https://github.com/t4t5/omdrop-owl")
         about.add_credit_section("Basato su", ["OWL", "OpenDrop", "omdrop-owl"])

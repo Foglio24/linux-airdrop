@@ -1,0 +1,4 @@
+#!/bin/sh
+# Root-owned install: never try to write bytecode next to the program.
+export PYTHONDONTWRITEBYTECODE=1
+exec /usr/bin/python3 /usr/lib/linux-airdrop/app.py "$@"

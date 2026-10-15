@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Linux AirDrop
+Comment=Share files with iPhone and iPad through AirDrop
+Comment[it]=Scambia file con iPhone e iPad dal menu AirDrop
+Exec=linux-airdrop
+Icon=it.foglio.LinuxAirDrop
+Terminal=false
+Categories=GNOME;GTK;Network;FileTransfer;
+StartupNotify=true
+StartupWMClass=it.foglio.LinuxAirDrop
+X-GNOME-UsesNotifications=true
+Keywords=AirDrop;Apple;iPhone;iPad;file;

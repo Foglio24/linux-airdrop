@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+case "$1" in
+remove|purge)
+    # The passwordless helper is created by the app, not by dpkg: never leave a root-owned,
+    # password-free entry point behind once the program is gone.
+    rm -rf /usr/local/lib/linux-airdrop /usr/local/lib/linux-airdrop.old
+    rm -f /usr/share/polkit-1/actions/it.foglio.LinuxAirDrop.policy /etc/polkit-1/rules.d/49-linux-airdrop.rules
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+    update-desktop-database -q /usr/share/applications 2>/dev/null || true
+    ;;
+esac
+exit 0

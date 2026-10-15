@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+case "$1" in
+configure)
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+    update-desktop-database -q /usr/share/applications 2>/dev/null || true
+    # If the optional passwordless helper was set up before, refresh it so that it matches this version.
+    manifest=/usr/local/lib/linux-airdrop/helper-manifest.json
+    if [ -f "$manifest" ]; then
+        user=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("user", ""))' "$manifest" 2>/dev/null || true)
+        if [ -n "$user" ]; then
+            /usr/bin/python3 -I -B /usr/lib/linux-airdrop/system_helper.py install --user "$user" >/dev/null 2>&1 \
+                || echo "linux-airdrop: could not refresh the passwordless helper; use Configure in the app." >&2
+        fi
+    fi
+    ;;
+esac
+exit 0
