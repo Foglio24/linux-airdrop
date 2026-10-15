@@ -1,0 +1,58 @@
+--- a/mt7921/pci_mac.c
++++ b/mt7921/pci_mac.c
+@@ -15,6 +15,9 @@
+ 	struct ieee80211_key_conf *key = info->control.hw_key;
+ 	struct mt76_connac_hw_txp *txp;
+ 	struct mt76_txwi_cache *t;
++	bool use_minrate = info->flags & IEEE80211_TX_CTL_USE_MINRATE;
++	bool injected_legacy = false;
++	u16 injected_rate = 0;
+ 	int id, pid;
+ 	u8 *txwi = (u8 *)txwi_ptr;
+ 
+@@ -40,9 +43,45 @@
+ 		}
+ 	}
+ 
++	/* Save the rate before TX status bookkeeping clears control.flags. */
++	if (is_mt7922(mdev) &&
++	    !(info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) &&
++	    (info->flags & IEEE80211_TX_CTL_INJECTED) &&
++	    (info->control.flags & IEEE80211_TX_CTRL_RATE_INJECT) &&
++	    !(info->control.rates[0].flags &
++	      (IEEE80211_TX_RC_MCS | IEEE80211_TX_RC_VHT_MCS)) &&
++	    info->band < NUM_NL80211_BANDS) {
++		struct ieee80211_supported_band *sband;
++		int idx = info->control.rates[0].idx;
++
++		sband = mdev->phy.hw->wiphy->bands[info->band];
++		if (sband && idx >= 0 && idx < sband->n_bitrates) {
++			struct ieee80211_rate *r = &sband->bitrates[idx];
++			u16 hw_rate = r->hw_value;
++
++			if (info->control.rates[0].flags & IEEE80211_TX_RC_USE_SHORT_PREAMBLE)
++				hw_rate = r->hw_value_short;
++			injected_rate = FIELD_PREP(MT_TX_RATE_MODE, hw_rate >> 8) |
++					FIELD_PREP(MT_TX_RATE_IDX, hw_rate & 0xff);
++			injected_legacy = true;
++		}
++	}
++
+ 	pid = mt76_tx_status_skb_add(mdev, wcid, tx_info->skb);
++	/* Let the common builder apply all fixed-rate descriptor settings. */
++	if (injected_legacy)
++		info->flags |= IEEE80211_TX_CTL_USE_MINRATE;
+ 	mt76_connac2_mac_write_txwi(mdev, txwi_ptr, tx_info->skb, wcid, key,
+ 				    pid, qid, 0);
++
++	if (injected_legacy) {
++		__le32 *txd = txwi_ptr;
++
++		if (!use_minrate)
++			info->flags &= ~IEEE80211_TX_CTL_USE_MINRATE;
++		txd[6] &= ~cpu_to_le32(MT_TXD6_TX_RATE);
++		txd[6] |= cpu_to_le32(FIELD_PREP(MT_TXD6_TX_RATE, injected_rate));
++	}
+ 
+ 	txp = (struct mt76_connac_hw_txp *)(txwi + MT_TXD_SIZE);
+ 	memset(txp, 0, sizeof(struct mt76_connac_hw_txp));

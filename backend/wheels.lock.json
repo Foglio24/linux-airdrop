@@ -1,0 +1,54 @@
+[
+  {
+    "file": "certifi-2026.7.22-py3-none-any.whl",
+    "sha256": "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775"
+  },
+  {
+    "file": "charset_normalizer-3.5.2-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+    "sha256": "34276fd796040bf0993ab33a369aa572e6979c7aab225a88893667ad8eac8f7a"
+  },
+  {
+    "file": "fleep-1.0.1.tar.gz",
+    "sha256": "c8f62b258ee5364d7f6c1ed1f3f278e99020fc3f0a60a24ad1e10846e31d104c"
+  },
+  {
+    "file": "idna-3.20-py3-none-any.whl",
+    "sha256": "ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c"
+  },
+  {
+    "file": "ifaddr-0.2.0-py3-none-any.whl",
+    "sha256": "085e0305cfe6f16ab12d72e2024030f5d52674afad6911bb1eee207177b8a748"
+  },
+  {
+    "file": "libarchive_c-5.3-py3-none-any.whl",
+    "sha256": "651550a6ec39266b78f81414140a1e04776c935e72dfc70f1d7c8e0a3672ffba"
+  },
+  {
+    "file": "opendrop-0.13.0-py3-none-any.whl",
+    "sha256": "df3480e3bfc2cd8d5a953741b13c4c22222f6b4176a810392734d8f9ab196915"
+  },
+  {
+    "file": "pillow-12.3.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+    "sha256": "251bf95b67017e27b13d82f5b326234ca62d70f9cf4c2b9032de2358a3b12c7b"
+  },
+  {
+    "file": "requests-2.34.2-py3-none-any.whl",
+    "sha256": "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0"
+  },
+  {
+    "file": "requests_toolbelt-1.0.0-py2.py3-none-any.whl",
+    "sha256": "cccfdd665f0a24fcf4726e690f65639d272bb0637b9b92dfd91a5568ccf6bd06"
+  },
+  {
+    "file": "setuptools-80.9.0-py3-none-any.whl",
+    "sha256": "062d34222ad13e0cc312a4c02d73f059e86a4acbfbdea8f8f76b28c99f306922"
+  },
+  {
+    "file": "urllib3-2.8.0-py3-none-any.whl",
+    "sha256": "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3"
+  },
+  {
+    "file": "zeroconf-0.151.5-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+    "sha256": "5846416ae2bddacb1bbb755233dd13c4bd15d94dfd0feb23a4b1abe1e2312302"
+  }
+]

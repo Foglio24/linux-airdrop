@@ -1,0 +1,95 @@
+{
+  "owl_base": "832d70f815c3d4a06a02117bf0fc5e868daa1ff0",
+  "downstream_repository": "https://github.com/t4t5/omdrop-owl",
+  "downstream_commit": "2b45e615f5e25c855374a46ab59612011878bc2e",
+  "patches": [
+    {
+      "name": "owl-01-tx-rate.patch",
+      "sha256": "317c43502c2b699121757961e1d78368ade51e3c392379e3ac7907132785a044",
+      "url": "https://raw.githubusercontent.com/t4t5/omdrop-owl/2b45e615f5e25c855374a46ab59612011878bc2e/patches/owl-01-tx-rate.patch"
+    },
+    {
+      "name": "owl-02-awdl-addr.patch",
+      "sha256": "fbeb18a8af8586914e81d9e569a886a2f7a76653f756f393745d81474bb2deab",
+      "url": "https://raw.githubusercontent.com/t4t5/omdrop-owl/2b45e615f5e25c855374a46ab59612011878bc2e/patches/owl-02-awdl-addr.patch"
+    },
+    {
+      "name": "owl-03-fixed-radio.patch",
+      "sha256": "4943063e441ef46b9eb1c846af36cc58ea61f9214b7692c0d0a3a06e425c29f4",
+      "url": "https://raw.githubusercontent.com/t4t5/omdrop-owl/2b45e615f5e25c855374a46ab59612011878bc2e/patches/owl-03-fixed-radio.patch"
+    },
+    {
+      "name": "owl-04-election-metric.patch",
+      "sha256": "95256b962afbfeb581f2cdf8d8e4fc3c7c36c5a12d3dce31c0473fcf7d7931c8",
+      "url": "https://raw.githubusercontent.com/t4t5/omdrop-owl/2b45e615f5e25c855374a46ab59612011878bc2e/patches/owl-04-election-metric.patch"
+    },
+    {
+      "name": "owl-05-fixed-radio-noack.patch",
+      "sha256": "c8a037d2920fa7d58a6b620e8b94ba4e8f96f1ed7c420b4077db6e2e20a990c1",
+      "url": "https://raw.githubusercontent.com/t4t5/omdrop-owl/2b45e615f5e25c855374a46ab59612011878bc2e/patches/owl-05-fixed-radio-noack.patch"
+    },
+    {
+      "name": "owl-06-fixed-radio-pin.patch",
+      "sha256": "750de727acc848a1d0fc2c118b2da899f7362e0dc14f2ed26fbb864ccebd9c0e",
+      "url": "https://raw.githubusercontent.com/t4t5/omdrop-owl/2b45e615f5e25c855374a46ab59612011878bc2e/patches/owl-06-fixed-radio-pin.patch"
+    },
+    {
+      "name": "owl-07-intel-reliability.patch",
+      "sha256": "fd1f71282186b0da0c36598be0f88a207fe0287978caf299951d96a1b9bc4380",
+      "url": "https://raw.githubusercontent.com/t4t5/omdrop-owl/2b45e615f5e25c855374a46ab59612011878bc2e/patches/owl-07-intel-reliability.patch"
+    },
+    {
+      "name": "owl-08-amsdu-bound.patch",
+      "sha256": "5bfd6d2b7425793ca74f98d6a6fc97676ba8e2bdb593bc1bc854d8a3fd2833e5",
+      "url": "https://raw.githubusercontent.com/t4t5/omdrop-owl/2b45e615f5e25c855374a46ab59612011878bc2e/patches/owl-08-amsdu-bound.patch"
+    },
+    {
+      "name": "owl-09-action-zero-padding.patch",
+      "sha256": "64a25129a448bac8d33afb964622e70ebcc206bc2428e312c1e373c545acb705",
+      "url": "https://raw.githubusercontent.com/t4t5/omdrop-owl/2b45e615f5e25c855374a46ab59612011878bc2e/patches/owl-09-action-zero-padding.patch"
+    }
+  ],
+  "binary": "owl-modern",
+  "binary_sha256": "1a853d2e0439e517b317178a6d30b0655a916fbbb335a0c6b843098ee1b96262",
+  "original_backup": "owl-original",
+  "build": {
+    "gcc": "15.3.0",
+    "cmake": "4.3.4",
+    "libev": "4.33 static",
+    "runtime": "target system libpcap/libnl/libm/libc",
+    "flags": [
+      "-O3",
+      "-fno-strict-aliasing",
+      "-DCMAKE_SKIP_RPATH=TRUE",
+      "-DCMAKE_C_STANDARD_LIBRARIES=-lm"
+    ],
+    "googletest_cxx_flags": "-include cstdint -Wno-error=maybe-uninitialized"
+  },
+  "validation": [
+    "65 upstream unit tests passed",
+    "Downstream A-MSDU over-capacity harness passed under AddressSanitizer",
+    "Downstream zero-padded MIF and nonzero-tail rejection harness passed under AddressSanitizer",
+    "Metric-first election regression scenario passed (522/counter393 beats510/counter3214 only when enabled)",
+    "-E accepted without interface and exited before radio initialization",
+    "All dynamic libraries resolved on target system",
+    "No OS, interface, driver or radio changes performed by modern build",
+    "After local initializations: same65base+2ASAN+metric regression tests and -E parse guard passed again"
+  ],
+  "limits": [
+    "No iOS27-specific source change or compatibility guarantee",
+    "Original hopping semantics unchanged unless -F explicitly requested",
+    "Base OWL election loop leaks an iterator per run under LeakSanitizer; unchanged from upstream and not changed in this downstream build"
+  ],
+  "local_patch": {
+    "name": "owl-gcc15-initializations.patch",
+    "sha256": "0e91b6ef40c92104fa5cbcb8db3aebd5de5de90e6118ce8f9a7f0a1410a2b7d1",
+    "source": "backend/sources/owl-gcc15-safety.patch",
+    "scope": "Only pre-existing pointer/radiotap variable initializations; daemon chdir change intentionally excluded"
+  },
+  "post_local_patch_diff": [
+    "daemon/netutils.c",
+    "src/rx.c"
+  ],
+  "source_archive_sha256": "9956e67061c2c8af2939198075a86c688dea0617f1c1ebc1cb2d178babc31a72",
+  "local_ack_experiment": "Optional -A preserves hardware ACK/retries with -F. Default remains unchanged. 66 C++ tests pass including radiotap flag regression."
+}

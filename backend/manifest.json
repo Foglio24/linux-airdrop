@@ -1,0 +1,129 @@
+{
+  "platform": "Ubuntu 26.10 amd64, CPython 3.14",
+  "sources": {
+    "owl": "https://github.com/jedbillyb/owl",
+    "owl_commit": "832d70f815c3d4a06a02117bf0fc5e868daa1ff0",
+    "airdrop_mt7921": "https://github.com/jedbillyb/airdrop-mt7921",
+    "patches_commit": "27edf28900d6b9a948816ee5e864afe1ce245056",
+    "googletest_commit": "703bd9caab50b139428cea1aaff9974ebee5742e",
+    "radiotap_commit": "94984dd829a605a2d7af55241145c159607f3b30"
+  },
+  "build": {
+    "gcc": "15.3.0",
+    "cmake": "4.3.4",
+    "libev": "4.33 static",
+    "libnl": "3.12.0",
+    "libpcap": "1.10.7",
+    "flags": [
+      "-O3",
+      "-fno-strict-aliasing",
+      "-DCMAKE_SKIP_RPATH=TRUE"
+    ]
+  },
+  "python_packages": [
+    {
+      "name": "certifi",
+      "version": "2026.7.22"
+    },
+    {
+      "name": "charset-normalizer",
+      "version": "3.5.2"
+    },
+    {
+      "name": "idna",
+      "version": "3.20"
+    },
+    {
+      "name": "ifaddr",
+      "version": "0.2.0"
+    },
+    {
+      "name": "libarchive-c",
+      "version": "5.3"
+    },
+    {
+      "name": "opendrop",
+      "version": "0.13.0"
+    },
+    {
+      "name": "pillow",
+      "version": "12.3.0"
+    },
+    {
+      "name": "requests",
+      "version": "2.34.2"
+    },
+    {
+      "name": "requests-toolbelt",
+      "version": "1.0.0"
+    },
+    {
+      "name": "setuptools",
+      "version": "80.9.0"
+    },
+    {
+      "name": "urllib3",
+      "version": "2.8.0"
+    },
+    {
+      "name": "zeroconf",
+      "version": "0.151.5"
+    },
+    {
+      "name": "fleep",
+      "version": "1.0.1"
+    }
+  ],
+  "owl_sha256": "a2580fc43d215e2e78b182a862b54f6974e67e70b0d261f777e8326484bf72e6",
+  "limitations": [
+    "No hardware or iOS 27 interoperability check performed.",
+    "Requires active-monitor Wi-Fi setup through separate privileged helper.",
+    "Native transfers require Apple AirDrop Everyone visibility."
+  ],
+  "validation": [
+    "65 OWL unit tests passed",
+    "OpenDrop imports and py_compile passed under CPython 3.14.8",
+    "OWL flag parse -S intersect reached no-interface guard without touching radio",
+    "No ELF RUNPATH; all dynamic libraries resolved on target Ubuntu",
+    "Portable backend/opendrop --help passed with secure_receiver hooks installed",
+    "14 mocked root_bridge rollback and ownership tests passed after fixes (validated by root agent)",
+    "No Wi-Fi interface change, privileged helper launch, or end-to-end phone transfer executed during backend validation"
+  ],
+  "blewake": {
+    "source": "https://github.com/jedbillyb/airdrop-mt7921/blob/27edf28900d6b9a948816ee5e864afe1ce245056/tools/blewake-dbus.py",
+    "dbus_path": "/org/bluez/linuxairdrop/adv0",
+    "adapter": "first powered LEAdvertisingManager1-capable controller",
+    "tested": "3 pure packet/property tests and py_compile passed; updated advertisement not registered or transmitted during validation",
+    "payload_source": "https://github.com/brentkearney/omdrop-awdl/blob/534f91a525337951ca19c311e53d333bd6d55100/userspace/ble-airdrop-adv.py",
+    "bluez_api_source": "https://github.com/bluez/bluez/blob/5.87/doc/org.bluez.LEAdvertisement.rst",
+    "bluez_parser_source": "https://github.com/bluez/bluez/blob/5.87/src/advertising.c",
+    "bluez_installed": "5.87-4",
+    "shape": "A (OS26 capture recipe)",
+    "type": "peripheral",
+    "interval_ms": 100,
+    "manufacturer_company_id": "0x004C",
+    "manufacturer_value_length": 20,
+    "continuity_type": "0x05",
+    "continuity_payload_length": 18,
+    "contact_hashes": "eight zero bytes (Everyone only)",
+    "tag": "three random bytes, stable for process registration",
+    "sha256": "904179903912cdfcd390f84ba38c6b607acbac6d1c1f3859c41e57ff577092ce"
+  },
+  "validation_counts": {
+    "owl_unit_tests_passed": 65,
+    "root_bridge_mock_tests_passed": 14,
+    "native_phone_transfer_tests_run": 0
+  },
+  "source_archive_sha256": {
+    "libev-4.33.tar.gz": "507eb7b8d1015fbec5b935f34ebed15bf346bed04a11ab82b8eee848c4205aea",
+    "owl-source.tar.gz": "573b595f6283a797bfc09a34e7819761c5cfa0278550bbe30bea1af0e8efd226"
+  },
+  "runtime_dependencies": {
+    "python": "CPython 3.14.8 (/usr/bin/python3)",
+    "libarchive13t64": "3.8.9-1",
+    "libpcap0.8t64": "1.10.7-1ubuntu1",
+    "libnl-3-200": "3.12.0-2",
+    "libnl-genl-3-200": "3.12.0-2",
+    "libnl-route-3-200": "3.12.0-2"
+  }
+}

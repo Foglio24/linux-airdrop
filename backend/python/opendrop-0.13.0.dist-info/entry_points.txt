@@ -1,0 +1,3 @@
+[console_scripts]
+opendrop = opendrop.cli:main
+

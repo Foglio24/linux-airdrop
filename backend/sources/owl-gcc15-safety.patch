@@ -1,0 +1,72 @@
+diff --git a/daemon/netutils.c b/daemon/netutils.c
+index b0d3e50..46282c1 100644
+--- a/daemon/netutils.c
++++ b/daemon/netutils.c
+@@ -150,7 +150,7 @@ void netutils_cleanup() {
+ int neighbor_add(int ifindex, const struct ether_addr *eth, const struct in6_addr *in6) {
+ 	int err;
+ 	struct rtnl_neigh *neigh;
+-	struct nl_addr *nl_ipaddr, *nl_llcaddr;
++	struct nl_addr *nl_ipaddr = NULL, *nl_llcaddr = NULL;
+ 
+ 	neigh = rtnl_neigh_alloc();
+ 	if (!neigh) {
+@@ -198,7 +198,7 @@ out:
+ int neighbor_remove(int ifindex, const struct in6_addr *in6) {
+ 	int err;
+ 	struct rtnl_neigh *neigh;
+-	struct nl_addr *nl_ipaddr;
++	struct nl_addr *nl_ipaddr = NULL;
+ 
+ 	neigh = rtnl_neigh_alloc();
+ 	if (!neigh) {
+@@ -360,8 +360,8 @@ static int parse_freq_support(struct nl_msg *msg, void *arg)
+ 
+ int is_channel_available(int ifindex, const int channel, bool *is_available) {
+ 	int err;
+-	struct nl_msg *m;
+-	struct nl_cb *cb;
++	struct nl_msg *m = NULL;
++	struct nl_cb *cb = NULL;
+ 	int freq;
+ 	static struct channel_args args = {
+ 		.is_available = false,
+@@ -434,7 +434,7 @@ out:
+  */
+ int set_channel(int ifindex, int channel) {
+ 	int err;
+-	struct nl_msg *m;
++	struct nl_msg *m = NULL;
+ 	int freq;
+ 
+ 	freq = ieee80211_channel_to_frequency(channel);
+diff --git a/daemon/owl.c b/daemon/owl.c
+index 349c6a6..3514c2e 100644
+--- a/daemon/owl.c
++++ b/daemon/owl.c
+@@ -71,7 +71,8 @@ static void daemonize() {
+ 
+ 	/* Change the working directory to the root directory */
+ 	/* or another appropriated directory */
+-	chdir("/");
++	if (chdir("/") < 0)
++		exit(EXIT_FAILURE);
+ 
+ 	/* Close all open file descriptors */
+ 	for (x = sysconf(_SC_OPEN_MAX); x >= 0; x--) {
+diff --git a/src/rx.c b/src/rx.c
+index 4581ae5..7611900 100644
+--- a/src/rx.c
++++ b/src/rx.c
+@@ -483,9 +483,9 @@ int awdl_rx(const struct buf *frame, struct buf ***data_frame, struct awdl_state
+ 	const struct ieee80211_hdr *ieee80211;
+ 	const struct ether_addr *from, *to;
+ 	uint16_t fc, qosc; /* frame and QoS control */
+-	signed char rssi;
++	signed char rssi = 0;
+ 	uint64_t tsft;
+-	uint8_t flags;
++	uint8_t flags = 0;
+ 
+ 	tsft = clock_time_us(); /* TODO Radiotap TSFT is more accurate but then need to access TSF in clock_time_us() */
+ 	if (radiotap_parse(frame, &rssi, &flags, NULL /* &tsft */) < 0)

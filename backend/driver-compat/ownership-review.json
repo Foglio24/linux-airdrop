@@ -1,0 +1,27 @@
+{
+  "module_path": "mac80211.ko",
+  "sha256": "67f4e403a4b8e1e1da1057a3fb38c2c77e2ac273e7499b8402530d4d69d4eac8",
+  "vermagic": "7.3.0-9-generic SMP preempt mod_unload modversions",
+  "srcversion": "C717022E9AD8A6645A51F9F",
+  "import_symbol_versions_checked": 423,
+  "export_symbol_versions_checked": 154,
+  "symbol_version_mismatches": 0,
+  "hardware_test": "not performed; current boot is blocked after earlier paired-monitor OOPS",
+  "replacement_outputs_written": true,
+  "review": "Independent second reviewer found no further blocking source issue. Tests run actual C iterator and BW routines; only fixtures stub kernel containers/RCU/objects.",
+  "actual_C_harness": {
+    "checks": 33,
+    "baseline_failures": 16,
+    "fixed_failures": 0,
+    "sanitizers": "AddressSanitizer and UndefinedBehaviorSanitizer, no diagnostics",
+    "cases": [
+      "hidden bound ownership, both close orders",
+      "hidden assigned and reserved during stop",
+      "NULL hidden, unbound hidden, poison hidden list pointers",
+      "ordinary/multilink, AP_VLAN exclusion, NAN ownership",
+      "bandwidth helper and max width, unexpected passive warning retained"
+    ]
+  },
+  "debug_info": "stripped on distribution copy only; unstripped build artifact preserved",
+  "size_bytes": 3674416
+}

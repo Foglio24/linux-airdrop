@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.log
+# Local state and preferences live under ~/.local and ~/.config, never in the checkout.
+settings.json
+session*.log
+.DS_Store

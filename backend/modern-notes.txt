@@ -1,0 +1,16 @@
+OWL modern radio backend
+
+Base: jedbillyb/owl832d70f815c3d4a06a02117bf0fc5e868daa1ff0
+Downstream: t4t5/omdrop-owl 2b45e615f5e25c855374a46ab59612011878bc2e (nine patches)
+
+Use -E to rank sync masters by metric first, following observed Apple behavior.
+Keep -S verbatim for the existing two-monitor hopping profile.
+-F is OPTIONAL: use only when the radio is intentionally held on one channel. It changes multicast timing and unicast scheduling, and should not be silently enabled for a hopping profile.
+
+No new AirDrop service TLV or iOS27-specific protocol assumption is included.
+Checks:65 upstream tests, two downstream AddressSanitizer harnesses, and one new metric-election regression passed. No hardware test was executed by this build step.
+Original owl is retained at owl-original; backend/owl has not been replaced.
+
+Local GCC15 initializations from the original bundle were reapplied: netlink pointers start at NULL; radiotap rssi/flags start at zero. No other local functional change was included. The post-patch source diff and repeat validation are recorded in modern-manifest.json.
+
+15 October: app defaults to -F -S intersect on channel 6 (visibility confirmed). Optional -A / app --fixed-ack tests hardware retransmissions on MT7922. 66 C++ tests passed; real transfer unconfirmed.

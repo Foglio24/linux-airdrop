@@ -1,0 +1,118 @@
+{
+  "kernel": "7.3.0-9-generic",
+  "ubuntu_source": "7.3.0-9.9",
+  "mode": "temporary modules, originals on disk preserved",
+  "hardware_test": "2026-10-15: paired active/passive monitor setup receives Apple frames and fixed6 native-menu visibility confirmed. After reboot, corrected ownership cleanup repeatedly restored stock module versions without reproducing previous OOPS. Transfer still waiting; P2P-GO architecture being prepared.",
+  "patch_source": "https://marc.info/?l=linux-wireless&m=178823162355132&w=4",
+  "modules": {
+    "mt792x-lib.ko": {
+      "sha256": "a9b49541df5f93fe9bbc097f3c81f2d82d0f01d0c724c2f933abd836b4841abf",
+      "vermagic": "7.3.0-9-generic SMP preempt mod_unload modversions",
+      "srcversion": "2BB6A0FD38D4704462885A9"
+    },
+    "mac80211.ko": {
+      "sha256": "67f4e403a4b8e1e1da1057a3fb38c2c77e2ac273e7499b8402530d4d69d4eac8",
+      "vermagic": "7.3.0-9-generic SMP preempt mod_unload modversions",
+      "srcversion": "C717022E9AD8A6645A51F9F",
+      "debug_info": "stripped on distribution copy only; unstripped build artifact preserved",
+      "size_bytes": 3674416
+    },
+    "mt7921e.ko": {
+      "sha256": "dd6e72b672aa5626c10697e75818e7e5ca3e853f60b65bcff35a0204f6589dc1",
+      "vermagic": "7.3.0-9-generic SMP preempt mod_unload modversions",
+      "srcversion": "65BEA1AF55F02F0C185D298",
+      "patch_commit": "02b6c9a1ef87e55f2ccf90739e5dbcab55390cc7",
+      "patch_source": "https://github.com/shaecodes-wilde/mt76/commit/02b6c9a1ef87e55f2ccf90739e5dbcab55390cc7",
+      "scope": "MT7922 only; injected legacy-rate TX descriptor; all other source functions unchanged",
+      "import_symbol_versions_checked": 119,
+      "export_symbol_versions_checked": 0,
+      "symbol_version_mismatches": 0,
+      "unchanged_C_and_header_files": 216,
+      "changed_source_files": [
+        "mt7921/pci_mac.c"
+      ],
+      "source_added_lines": 39,
+      "source_removed_lines": 0,
+      "validation": "Built exact Ubuntu7.3.0-9.9 source with current7.3.0-9-generic headers. No moduleload or hardwaretest by builder."
+    }
+  },
+  "patch_sources": [
+    "https://marc.info/?l=linux-wireless&m=178823162355132&w=4",
+    "https://lists.openwall.net/linux-kernel/2026/09/04/2809"
+  ],
+  "independent_review": {
+    "kernel_header_symvers": "/usr/src/linux-headers-7.3.0-9-generic/Module.symvers",
+    "module_abi_checks": {
+      "mt792x-lib.ko": {
+        "import_symbol_versions_checked": 130,
+        "export_symbol_versions_checked": 68,
+        "mismatches": 0
+      },
+      "mac80211.ko": {
+        "import_symbol_versions_checked": 423,
+        "export_symbol_versions_checked": 154,
+        "mismatches": 0
+      }
+    },
+    "source_basis": "Exact Ubuntu linux-source-7.3.0 version 7.3.0-9.9, stock headers and configuration",
+    "mocked_driver_trial_tests_passed": 15,
+    "network_or_module_load_actions_performed_by_reviewer": 0,
+    "required_sequence": "Create active monitor with flags active; bring it up; explicitly set its frequency before OWL. Changing passive monitor alone does not bind active monitor channel.",
+    "queue_protection": "Stock cfg.c retains TXQ guard; iface.c allocates TXQ when active flag is set at creation.",
+    "restore_protection": "Whitelist rmmod; refuse pre-existing custom loaded srcversions; reload distribution modules and restore prior NetworkManager/link state.",
+    "filter_counter_fix_source": "https://lists.openwall.net/linux-kernel/2026/09/04/2809",
+    "limitations": [
+      "Source and symbol checks cannot prove radio or iOS interoperability.",
+      "Modules are unsigned and loading them may leave kernel taint until reboot."
+    ],
+    "source_changes": {
+      "mt792x-test": {
+        "unchanged_C_and_header_files": 216,
+        "changed_files": [
+          "mt792x_core.c"
+        ]
+      },
+      "mac80211-test": {
+        "unchanged_C_and_header_files": 89,
+        "changed_files": [
+          "cfg.c",
+          "chan.c",
+          "iface.c"
+        ]
+      }
+    },
+    "published_channel_patch_checked": "Local cfg.c and chan.c diffs match the 13-addition/4-deletion published patch.",
+    "filter_counter_fix_checked": "iface.c decrement now outside passive-monitor branch, matching published stop-counter fix.",
+    "remaining_kernel_behavior": "OWL -N cycles active vif down/up, then immediate channel timer rebinds because current channel starts as CHAN_NULL."
+  },
+  "first_hardware_trial": {
+    "active_monitor_creation": "passed",
+    "AWDL_peer_MIF_receive": "observed",
+    "HTTPS_listener": "bound awdl0 IPv6 only",
+    "native_menu": "not seen by user",
+    "original_module_reload": "verified on live host after closing app"
+  },
+  "ownership_fix": {
+    "status": "Compiled, 33 actual-C fixture checks and independent review passed; after reboot multiple live cleanups restored stock modules without reproducing the previous OOPS.",
+    "patch": "mac80211-hidden-monitor-ownership.patch",
+    "review": "ownership-review.json",
+    "checks": 33,
+    "baseline_failures": 16,
+    "fixed_failures": 0,
+    "cause": "Hidden monitor_sdata channel owner was absent from the channel-user iterator.",
+    "behavior": "Visit hidden monitor once, count bound assigned/reserved references during stop, recognize hidden monitor in bandwidth helper."
+  },
+  "previous_trial_failure": {
+    "local_time": "2026-10-14 23:37:48 Europe/Rome",
+    "kernel": "7.3.0-9-generic",
+    "fault": "general protection fault in ieee80211_free_chanctx, called by ieee80211_del_virtual_monitor during paired-monitor interface deletion",
+    "initial_warning": "drv_unassign_vif_chanctx: channel context driver_present was false",
+    "consequence": "Blocked Wi-Fi netlink and NetworkManager; reboot required before another native trial.",
+    "distribution_modules_on_disk": "preserved"
+  },
+  "source_archive": {
+    "file": "driver-sources.tar.gz",
+    "sha256": "5656f441418a20d86df1e887308150df433a5fdcd6e561fc59a5613bcf12ade0",
+    "basis": "Exact Ubuntu7.3.0-9.9 source plus all retained compatibility patches and standalone target Makefiles"
+  }
+}
