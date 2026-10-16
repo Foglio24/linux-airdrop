@@ -122,7 +122,8 @@ class AirDropCli:
                     parser.error("-u,--url takes a single -f,--file")
                 if not args.url:
                     for path in args.file:
-                        if not os.path.isfile(path):
+                        # Folders are allowed too (sent as a folder, contents included).
+                        if not (os.path.isfile(path) or os.path.isdir(path)):
                             parser.error("File in -f,--file not found: %s" % path)
                 self.file = args.file
                 self.is_url = args.url

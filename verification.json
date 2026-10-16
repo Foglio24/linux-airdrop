@@ -24,7 +24,23 @@
     "system_helper_staged_install": 24,
     "autostart_entry": 4,
     "gui_behaviour_with_tray_helper_duration": 32,
-    "service_ttl": 2
+    "service_ttl": 2,
+    "v1_1_automated_total": "354 tests in 27 files, all passing (167 existing + 187 new); run tests/run-all.sh; slow emulation case with AIRDROP_SLOW_TESTS=1",
+    "v1_1_store_history_devices": 17,
+    "v1_1_fileinfo": 12,
+    "v1_1_progress_and_events": 12,
+    "v1_1_receiver_events_cancel_prompt": 14,
+    "v1_1_preview_thumbnail_sandbox": 13,
+    "v1_1_identity_record": 6,
+    "v1_1_folder_send_archive": 7,
+    "v1_1_outgoing_checks_zip": 10,
+    "v1_1_diagnostics": 20,
+    "v1_1_repair": 15,
+    "v1_1_app_transfers_ui_logic": 35,
+    "v1_1_nautilus_stand_in": 12,
+    "v1_1_single_instance_real_dbus": 1,
+    "v1_1_loopback_real_sender_receiver": "5 tests: real OpenDrop sender+receiver in a private netns (dummy awdl0), 24 MB + folder, byte-exact, events agree",
+    "v1_1_awdl_link_emulation": "tests/test_awdl_link.py: 5 fast + 1 slow (lossy case stalls as observed on 16 Oct)"
   },
   "native_airdrop_on_ios27": "VERIFIED 2026-10-15 11:54 with Wi-Fi Direct anchor: PC visible, iPhone->PC received a 1.5 MB text file (/Discover, /Ask, /Upload), PC->iPhone upload accepted ('Uploading has been successful', 62153 B archive). Single card MT7922, single iPhone.",
   "automatic_admin_grants": false,
@@ -33,8 +49,8 @@
   "pending_hardware_test": "If discovery stops after some minutes while the session is up: restart only blewake.py (new BLE tag) and see whether the phone reconnects, before restarting the radio session. Not yet reproduced since the 0.5 s announce fix.",
   "last_kernel_error": "2026-10-14 23:37:48 Europe/Rome: drv_unassign_vif_chanctx warning followed by ieee80211_free_chanctx stale list-pointer OOPS while deleting paired active monitor.",
   "current_boot_recovery": "Trial stopped normally; stock mac80211 version verified and awdl0 removed.",
-  "next_step": "Log out and back in to confirm autostart + tray; optionally enable 'Rendi visibile all'avvio' with duration 'Finché non la interrompo'; run a transfer with a phone through the passwordless session.",
-  "updated": "2026-10-15",
+  "next_step": "Send a 5 MB file to the iPhone with 'Conferme radio' on (default), then receive one from it; read the 'TCP:' line in the log. Then the 1.1 feature checks.",
+  "updated": "2026-10-16",
   "go_anchor": {
     "status": "default mode; verified end to end on 2026-10-15 after the interface-selection fix",
     "source": "https://github.com/t4t5/omdrop-owl/pull/55",
@@ -52,5 +68,42 @@
   "bug_found_on_real_system_2": "stop_session() disabled the main button and only a 1 s timer re-enabled it, so after 'Interrompi' the app could not be made visible again until restarted; now re-enabled in bridge_ended().",
   "service_ttl_and_ghosts": "2026-10-15 14:00: installed host_ttl=other_ttl=120 for the AirDrop service (the instance name is random per run and the library default kept it 75 min in the phone, which showed one '<hostname>' per earlier session). Ghost instances were cleared with mDNS goodbyes (packets < 1200 B; MTU 1450). Per-session instance name deliberately NOT made stable. Confirmed by the user at ~14:06: a single '<hostname>' in the AirDrop list.",
   "iphone_receiving_off": "VERIFIED 2026-10-15 14:04 by the user: iPhone on 'Ricezione disattivata' (receiving off) with the PC visible -> discovery, /Discover, /Ask, /Upload and a text file received. The iPhone does not need 'Everyone for 10 minutes' to send to the PC.",
-  "login_autostart": "settings.json has auto_visible=true and duration=always (set by the user): the app starts hidden at login and makes itself visible after ~4 s without a password."
+  "login_autostart": "settings.json has auto_visible=true and duration=always (set by the user): the app starts hidden at login and makes itself visible after ~4 s without a password.",
+  "v1_1_features": {
+    "status": "implemented and tested without a phone; NOT yet tried with an iPhone",
+    "implemented": [
+      "history (SQLite)",
+      "drag and drop",
+      "pre-acceptance preview",
+      "GNOME Files entry + script",
+      "live progress and cancel",
+      "remembered devices",
+      "diagnostics dashboard and report",
+      "guided repair with attempt limits"
+    ],
+    "not_implemented": {
+      "trusted devices / automatic accepting": "No identifier AirDrop gives the receiver is unforgeable or non-replayable; see docs/TRUSTED-DEVICES.md. Manual confirmation kept.",
+      "PDF/document previews": "AirDrop sends content only after acceptance; nothing to render before.",
+      "forced root-level Wi-Fi restore": "Cannot be validated without risking the kernel fault seen in earlier tests; the normal stop path is unchanged."
+    },
+    "unverified_on_hardware": [
+      "native folder send to iOS",
+      "thumbnail / FileSize fields iOS sends in /Ask",
+      "whether iOS attaches SenderRecordData and its layout",
+      "progress figures over a real AWDL link",
+      "Files context menu inside a real Files with python3-nautilus",
+      "pointer drag and drop from Files",
+      "installing the .deb"
+    ],
+    "unchanged_from_1_0": "root_bridge.py, p2p_anchor.py, awdl_diag.py, OWL, driver modules, system_helper.py are byte-identical; system_helper.py status stays 'ready'",
+    "vendored_opendrop_changes": "client.py: folder entries in /Ask and archive, optional start/progress hooks; cli.py: accept folders for send"
+  },
+  "send_to_iphone_stall": {
+    "observed": "2026-10-16 11:33: 664 MB PC->iPhone accepted, 192 kB sent, then no ACK for 30 s; 'Upload stalled'. iPhone->PC 1.5 MB in 3 s just before.",
+    "cause": "With -F OWL sends unicast frames NOACK (no radio retries) unless -A; phone on ch 6 only 2-5 of 16 slots; TCP exponential backoff; 30 s stall limit. Read from session log (TCP frame counts per 10 s) and OWL src/tx.c.",
+    "emulator_evidence": "tests/awdl_link_emulator.py, 2 MB: 2/16 slots 0% loss 114 kB/s, 15% loss 26 kB/s, 30% loss stalled; 5/16 slots 0% 277 kB/s. TCP tuning +0-35%.",
+    "fix": "radio_ack setting on by default (--fixed-ack -> OWL -A, 15 hardware tries on MT7922); sender TCP thin linear timeouts + RTO max 2 s; 90 s stall limit; TCP_INFO report in the log; >100 MB warning. Root-side files unchanged (helper stays 'ready').",
+    "status": "small send confirmed with the iPhone; large sends not yet verified",
+    "first_real_check_after_fix": "2026-10-16 12:03, radio acknowledgements on: a 62 KB image sent to the iPhone completed; 1.5 MB received from the iPhone in 3.3 s (same as before, so receiving is not slowed down). A multi-megabyte send has NOT been tried yet."
+  }
 }

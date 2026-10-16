@@ -4,7 +4,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(dirname "$here")
-version=${1:-1.0.0}
+version=${1:-1.1.0}
 out=${2:-"$root/dist"}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -16,7 +16,9 @@ mkdir -p "$lib" "$doc" "$pkg/DEBIAN" "$pkg/usr/bin" "$pkg/usr/share/applications
 
 # The program: everything needed at run time, nothing else (no tests, no packaging, no VCS data).
 for item in app.py confirm.py tray.py autostart.py system_helper.py root_bridge.py p2p_anchor.py \
-            awdl_diag.py secure_receiver.py start.sh LICENSE verification.json icons backend; do
+            awdl_diag.py secure_receiver.py fileinfo.py progress.py transfer_events.py store.py preview.py \
+            identity.py outgoing.py diagnostics.py repair.py ui_transfers.py ui_history.py ui_devices.py \
+            ui_diagnostics.py nautilus start.sh LICENSE verification.json icons backend; do
     cp -a "$root/$item" "$lib/"
 done
 find "$lib" -name __pycache__ -type d -prune -exec rm -rf {} +
@@ -24,7 +26,11 @@ find "$lib" -name '*.pyc' -delete
 find "$pkg" -type d -exec chmod 755 {} +
 find "$lib" -type f -exec chmod 644 {} +
 chmod 755 "$lib/start.sh" "$lib/confirm.py" "$lib/backend/opendrop" "$lib/backend/owl" \
-          "$lib/backend/owl-modern" "$lib/backend/owl-original"
+          "$lib/backend/owl-modern" "$lib/backend/owl-original" "$lib/nautilus/scripts/Invia con Linux AirDrop"
+
+# GNOME Files context-menu entry (loaded by python3-nautilus, which the package only recommends).
+mkdir -p "$pkg/usr/share/nautilus-python/extensions"
+install -m 644 "$root/nautilus/linux_airdrop_nautilus.py" "$pkg/usr/share/nautilus-python/extensions/"
 
 # Launcher, desktop entry, icons.
 install -m 755 "$here/debian/linux-airdrop" "$pkg/usr/bin/linux-airdrop"
@@ -35,6 +41,7 @@ install -m 644 "$root/icons/linux-airdrop-symbolic.svg" "$root/icons/linux-airdr
 
 # Documentation, copyright, changelog and the licences of the bundled Python libraries.
 install -m 644 "$root/README.md" "$doc/README.md"
+install -m 644 "$root"/docs/*.md "$doc/"
 python3 - "$root" "$doc" "$version" <<'PY'
 import email.parser, glob, os, sys, time, gzip
 root, doc, version = sys.argv[1:4]
@@ -52,7 +59,7 @@ open(os.path.join(doc, "third-party-licenses.txt"), "w").write(
     "full texts are in the matching *.dist-info directories and in backend/licenses):\n\n" + "\n".join(rows) + "\n")
 stamp = time.strftime("%a, %d %b %Y %H:%M:%S %z")
 with gzip.open(os.path.join(doc, "changelog.Debian.gz"), "wt") as f:
-    f.write(f"linux-airdrop ({version}) unstable; urgency=low\n\n  * First public release.\n\n"
+    f.write(f"linux-airdrop ({version}) unstable; urgency=low\n\n  * Transfer history, remembered devices, drag and drop, live progress,\n    pre-acceptance preview, diagnostics with guided repairs, GNOME Files entry.\n  * The radio code, the driver modules and the privileged helper are unchanged.\n\n"
             f" -- Foglio24 <82967977+Foglio24@users.noreply.github.com>  {stamp}\n")
 PY
 cat > "$doc/copyright" <<'CR'

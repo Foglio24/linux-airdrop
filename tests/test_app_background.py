@@ -323,6 +323,16 @@ class BackgroundBehaviour(unittest.TestCase):
         for state in ("outdated", "unsafe", "other-user"):
             self.assertNotIn("/usr/local/lib/linux-airdrop/airdrop-bridge", self.start_with(state, "25m"), state)
 
+    def test_radio_acknowledgements_are_requested_by_default_and_can_be_switched_off(self):
+        # Without them every frame to the iPhone is sent once; uploads stalled after a few hundred kB (docs/SENDING.md).
+        self.app.ack_row.set_active(True)
+        self.assertIn("--fixed-ack", self.start_with("ready", "25m"))
+        self.app.ack_row.set_active(False)
+        self.assertNotIn("--fixed-ack", self.start_with("ready", "25m"))
+        self.assertFalse(app_module.load_settings()["radio_ack"])
+        self.app.ack_row.set_active(True)
+        self.assertTrue(app_module.load_settings()["radio_ack"])
+
     def test_session_length_is_passed_to_the_bridge_with_a_margin(self):
         for duration, expected in (("25m", "1800"), ("2h", "7500"), ("always", "0")):
             argv = self.start_with("ready", duration)
@@ -378,17 +388,20 @@ class SettingsFile(unittest.TestCase):
 
     def test_round_trip(self):
         values = {"name": "Studio", "channel": 44, "wifi_direct": False, "background": False,
-                  "auto_visible": True, "duration": "always"}
+                  "auto_visible": True, "duration": "always", "remember": False, "auto_repair": False,
+                  "radio_ack": False}
         app_module.save_settings(values)
         self.assertEqual(app_module.load_settings(), values)
 
     def test_missing_corrupt_or_hostile_files_fall_back_to_defaults(self):
         defaults = {"name": "", "channel": 6, "wifi_direct": True, "background": True,
-                    "auto_visible": False, "duration": "25m"}
+                    "auto_visible": False, "duration": "25m", "remember": True, "auto_repair": True,
+                    "radio_ack": True}
         self.assertEqual(app_module.load_settings(), defaults)
         app_module.SETTINGS.parent.mkdir(parents=True)
         for text in ("not json", "[1, 2]", json.dumps({"name": 7, "channel": 99, "wifi_direct": "yes", "background": None,
-                                                    "auto_visible": 1, "duration": "forever"})):
+                                                    "auto_visible": 1, "duration": "forever", "remember": "no",
+                                                    "auto_repair": 0, "radio_ack": "sì"})):
             app_module.SETTINGS.write_text(text)
             self.assertEqual(app_module.load_settings(), defaults)
 

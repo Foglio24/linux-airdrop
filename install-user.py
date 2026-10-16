@@ -12,6 +12,8 @@ import argparse
 parser = argparse.ArgumentParser(description="Installa Linux AirDrop per l'utente corrente, senza sudo.")
 parser.add_argument("--autostart", dest="autostart", action="store_true", default=None, help="avvia l'app in background al login")
 parser.add_argument("--no-autostart", dest="autostart", action="store_false", help="non avviarla al login")
+parser.add_argument("--no-files-menu", dest="files_menu", action="store_false", default=True,
+                    help="non aggiungere «Invia con Linux AirDrop» al menu di Files")
 options = parser.parse_args()
 source = Path(__file__).resolve().parent
 sys.path.insert(0, str(source))
@@ -58,13 +60,27 @@ desktop = apps / "it.foglio.LinuxAirDrop.desktop"
 desktop.write_text("\n".join([
     "[Desktop Entry]", "Type=Application", "Name=Linux AirDrop",
     "Comment=Scambia file dal menu AirDrop di iPhone e iPad",
-    "Exec=" + quoted(destination / "start.sh"), "Icon=it.foglio.LinuxAirDrop",
+    "Exec=" + quoted(destination / "start.sh") + " %F", "Icon=it.foglio.LinuxAirDrop",
     "Terminal=false", "Categories=GNOME;GTK;Network;FileTransfer;", "StartupNotify=true",
     "StartupWMClass=it.foglio.LinuxAirDrop", "X-GNOME-UsesNotifications=true",
     "Keywords=AirDrop;Apple;iPhone;iPad;file;", "",
 ]), encoding="utf-8")
 subprocess.run(["desktop-file-validate", str(desktop)], check=True)
 subprocess.run(["update-desktop-database", str(apps)], check=False, stdout=subprocess.DEVNULL)
+if options.files_menu:
+    # GNOME Files (Nautilus): a script that works everywhere (right-click > Scripts) and, where python3-nautilus
+    # is installed, a real entry in the context menu. Both hand the selection to the running Linux AirDrop.
+    scripts = data / "nautilus/scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    script = scripts / "Invia con Linux AirDrop"
+    shutil.copyfile(destination / "nautilus/scripts/Invia con Linux AirDrop", script)
+    script.chmod(0o755)
+    extensions = data / "nautilus-python/extensions"
+    extensions.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(destination / "nautilus/linux_airdrop_nautilus.py", extensions / "linux_airdrop_nautilus.py")
+    print("Menu di Files: «Script → Invia con Linux AirDrop» è pronto.")
+    if not Path("/usr/lib/x86_64-linux-gnu/nautilus/extensions-4/libnautilus-python.so").exists():
+        print("Per la voce direttamente nel menu: sudo apt install python3-nautilus, poi chiudi Files con «nautilus -q».")
 if options.autostart is not None:
     autostart.set_enabled(options.autostart, destination / "start.sh")
     print("Avvio al login:", "attivato" if options.autostart else "disattivato")

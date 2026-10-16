@@ -233,7 +233,12 @@ class AirDropClient:
             )
         else:
             self.http_conn.request("POST", url, body=body, headers=_headers)
+        sock = self.http_conn.sock
         http_resp = self.http_conn.getresponse()
+        if url == "/Upload" and getattr(self, "_upload_started", None):
+            # The receiver has answered, so every byte is acknowledged; the response still holds the
+            # socket open here, whereas after read() a "Connection: close" reply has closed it.
+            log_tcp_report(sock, self._upload_started)
 
         response_bytes = http_resp.read()
         AirDropUtil.write_debug(
@@ -298,14 +303,22 @@ class AirDropClient:
             # perfect, which is the kind of failure that gets reported months
             # later as AirDrop mangling things.
             for file in files:
-                with open(file, "rb") as handle:
-                    entry_flp = fleep.get(handle.read(128))
-                file_name = os.path.basename(file)
+                # A folder is announced like Finder does: a public.folder entry whose
+                # contents travel inside the archive. (Folders were never usable
+                # before: open() on a directory raised, and `isdir(file_name)` tested
+                # the bare name relative to the working directory.)
+                is_dir = os.path.isdir(file)
+                if is_dir:
+                    entry_flp = None
+                else:
+                    with open(file, "rb") as handle:
+                        entry_flp = fleep.get(handle.read(128))
+                file_name = os.path.basename(os.path.normpath(file))
                 file_entry = {
                     "FileName": file_name,
-                    "FileType": AirDropUtil.get_uti_type(entry_flp),
+                    "FileType": "public.folder" if is_dir else AirDropUtil.get_uti_type(entry_flp),
                     "FileBomPath": os.path.join(".", file_name),
-                    "FileIsDirectory": os.path.isdir(file_name),
+                    "FileIsDirectory": is_dir,
                     "ConvertMediaFormats": 0,
                 }
                 yield file_entry
@@ -318,10 +331,11 @@ class AirDropClient:
             # The icon stays the first file's - one transfer, one thumbnail.
             # Only the icon is decided here now; the per-entry types are sniffed
             # in file_entries above.
-            with open(file_path[0], "rb") as f:
-                first_flp = fleep.get(f.read(128))
-                if not icon and len(first_flp.mime) > 0 and "image" in first_flp.mime[0]:
-                    icon = AirDropUtil.generate_file_icon(f.name)
+            if not os.path.isdir(file_path[0]):
+                with open(file_path[0], "rb") as f:
+                    first_flp = fleep.get(f.read(128))
+                    if not icon and len(first_flp.mime) > 0 and "image" in first_flp.mime[0]:
+                        icon = AirDropUtil.generate_file_icon(f.name)
             ask_body["Files"] = [e for e in file_entries(file_path)]
         if icon:
             ask_body["FileIcon"] = icon
@@ -345,6 +359,34 @@ class AirDropClient:
                 pass
 
         return success
+
+    # Optional reporting hooks, set by the application (secure_receiver.install). They receive real byte
+    # counts only: start_hook(total_bytes) once the archive is built, progress_hook(done, total) after each
+    # slice has been handed to the kernel.
+    start_hook = None
+    progress_hook = None
+
+    @staticmethod
+    def _archive_members(path):
+        """(path on disk, name in the archive) for a file, or for a folder and everything below it.
+
+        A plain file gives exactly the single entry it always did. Symbolic links and special files inside a
+        folder are skipped: following a link could pull files from outside the folder the user chose.
+        """
+        top = os.path.basename(os.path.normpath(path))
+        yield path, os.path.join(".", top)
+        if not os.path.isdir(path):
+            return
+        for root, dirs, files in os.walk(path, followlinks=False):
+            dirs.sort()
+            dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
+            relative_root = os.path.relpath(root, path)
+            for name in dirs + sorted(files):
+                full = os.path.join(root, name)
+                if os.path.islink(full) or not (os.path.isdir(full) or os.path.isfile(full)):
+                    continue
+                relative = name if relative_root == "." else os.path.join(relative_root, name)
+                yield full, os.path.join(".", top, relative)
 
     @staticmethod
     def _cpio_to_dvzip(cpio, block=128 * 1024, stored=False):
@@ -538,12 +580,14 @@ class AirDropClient:
                 # one transfer per file, and so one Accept per file on the
                 # phone.
                 for f in file_path:
-                    ff = os.path.basename(f)
-                    archive.add_abs_file(f, os.path.join(".", ff))
+                    for source, stored in self._archive_members(f):
+                        archive.add_abs_file(source, stored)
             payload = stream.getvalue()
 
             if dvzip:
                 payload = self._cpio_to_dvzip(payload)
+            if self.start_hook is not None:
+                self.start_hook(len(payload))
 
             minimal = "minhdr" in arm or "applehdr" in arm or "rawhdr" in arm
             raw = "rawhdr" in arm
@@ -676,6 +720,7 @@ class AirDropClient:
         sock = self.http_conn.sock
         prev = sock.gettimeout()
         sock.settimeout(stall)
+        started = self._upload_started = time.monotonic()
         try:
             view = memoryview(data)
             for off in range(0, len(view), self.SEND_SLICE):
@@ -688,12 +733,83 @@ class AirDropClient:
                         "acknowledging"
                     )
                     raise
+                if self.progress_hook is not None:
+                    self.progress_hook(min(off + self.SEND_SLICE, len(view)), len(view))
+        except BaseException:
+            # A failed upload says how lossy the link was (a successful one is reported by send_upload,
+            # once the receiver has answered, so that the numbers cover the whole transfer).
+            log_tcp_report(sock, started)
+            raise
         finally:
             # The socket may already be closed by the failure path above it.
             try:
                 sock.settimeout(prev)
             except OSError:
                 pass
+
+
+# TCP options for the AWDL link (Linux numbers from <linux/tcp.h>; older kernels just refuse them).
+TCP_THIN_LINEAR_TIMEOUTS = 16
+TCP_RTO_MAX_MS = 44
+TCP_RTO_MIN_US = 45
+
+
+TCP_INFO = 11
+_TCP_INFO_LAYOUT = "8B24I4Q6I4Q2I2Q"     # struct tcp_info up to tcpi_bytes_retrans (Linux 4.19+)
+
+
+def tcp_report(sock):
+    """A one-line summary of a TCP connection's real history (retransmissions, RTT, RTO), or None.
+
+    Read from the kernel's own counters (TCP_INFO), so a failed or slow upload says how lossy the
+    link was instead of leaving it to guesswork."""
+    try:
+        size = struct.calcsize(_TCP_INFO_LAYOUT)
+        raw = sock.getsockopt(socket.IPPROTO_TCP, TCP_INFO, size)
+        if len(raw) < size:
+            return None
+        v = struct.unpack(_TCP_INFO_LAYOUT, raw)
+    except Exception:       # a report must never be the reason a transfer fails
+        return None
+    u32 = v[8:32]
+    rto, rtt, rttvar, cwnd, total_retrans = u32[0], u32[15], u32[16], u32[18], u32[23]
+    data_segs_out = v[41]
+    bytes_acked, bytes_sent, bytes_retrans = v[34], v[48], v[49]
+    share = 100.0 * total_retrans / data_segs_out if data_segs_out else 0.0
+    return (f"TCP: {bytes_acked} byte confermati, {data_segs_out} segmenti inviati, {total_retrans} ritrasmessi "
+            f"({share:.0f}%), RTT {rtt // 1000} ms (±{rttvar // 1000}), RTO {rto // 1000} ms, cwnd {cwnd}, "
+            f"byte inviati {bytes_sent}, ritrasmessi {bytes_retrans}")
+
+
+def log_tcp_report(sock, started):
+    report = tcp_report(sock)
+    if report:
+        elapsed = time.monotonic() - started
+        logger.info(f"{report}, durata {elapsed:.1f} s")
+
+
+def tune_awdl_socket(sock):
+    """Keep TCP retrying often enough to meet a peer that is on our channel a few slots per second.
+
+    Over AWDL a peer listens on our channel for only part of each 1.048 s period, so a burst of lost
+    frames is normal, not congestion. With the defaults, TCP doubles its retransmission timeout on each
+    loss (1, 2, 4, 8, 16 s ...), and after a handful of misses it retries so rarely that it never
+    lands in a window again: the upload stalls and is abandoned. Linear timeouts while few packets are
+    in flight, and a ceiling on the timeout, keep it knocking about every two seconds instead.
+    Set AIRDROP_TCP_TUNING=0 to compare with the kernel defaults.
+    """
+    if os.environ.get("AIRDROP_TCP_TUNING", "1") == "0":
+        return
+    ceiling = int(os.environ.get("AIRDROP_TCP_RTO_MAX_MS", "2000"))
+    options = [(TCP_THIN_LINEAR_TIMEOUTS, 1), (TCP_RTO_MAX_MS, ceiling)]
+    floor = os.environ.get("AIRDROP_TCP_RTO_MIN_MS")
+    if floor:
+        options.append((TCP_RTO_MIN_US, int(floor) * 1000))
+    for option, value in options:
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, option, value)
+        except OSError:
+            pass
 
 
 class HTTPSConnectionAWDL(HTTPSConnection):
@@ -778,6 +894,8 @@ class HTTPSConnectionAWDL(HTTPSConnection):
                     sock.settimeout(timeout)
                 if self.interface_name == "awdl0" and platform.system() == "Darwin":
                     sock.setsockopt(socket.SOL_SOCKET, 0x1104, 1)
+                if self.interface_name == "awdl0" and af == socket.AF_INET6:
+                    tune_awdl_socket(sock)
                 if source_address:
                     sock.bind(source_address)
                 sock.connect(sa)

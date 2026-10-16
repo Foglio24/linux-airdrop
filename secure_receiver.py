@@ -10,6 +10,7 @@ import collections
 import functools
 import inspect
 import ipaddress
+import json
 import logging
 import os
 from pathlib import Path, PurePosixPath
@@ -19,12 +20,19 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import uuid
 import zlib
 from http.server import ThreadingHTTPServer
+
+import fileinfo
+import identity
+import preview
+import store
+import transfer_events as events
 
 LOG = logging.getLogger("linux-airdrop.receiver")
 CONTROL_LIMIT = 4 * 1024 * 1024
@@ -35,6 +43,7 @@ APPROVAL_SECONDS = 180
 READ_TIMEOUT = 30
 TRANSFER_SECONDS = 3600
 CONFIRM_SECONDS = 120
+EVENT_FILES = 40      # file entries per event line (the window shows a summary; the folder holds the rest)
 _installed = False
 
 
@@ -59,6 +68,70 @@ def _transfer_id(value):
         return str(uuid.UUID(value))
     except ValueError:
         return value
+
+
+# ------------------------------------------------------------ cancellation and progress reporting
+_cancelled = set()
+_cancel_lock = threading.Lock()
+
+
+def cancel(transfer):
+    with _cancel_lock:
+        _cancelled.add(transfer)
+
+
+def is_cancelled(transfer):
+    with _cancel_lock:
+        return transfer in _cancelled
+
+
+def _forget_cancel(transfer):
+    with _cancel_lock:
+        _cancelled.discard(transfer)
+
+
+def start_command_reader(stream=None):
+    """Read 'cancel <transfer id>' lines from the window. End of input just ends the reader."""
+    stream = stream or os.fdopen(os.dup(0), "r", errors="replace")
+
+    def loop():
+        try:
+            for line in stream:
+                parts = line.split()
+                if len(parts) == 2 and parts[0] == "cancel":
+                    cancel(parts[1][:128])
+        except (OSError, ValueError):
+            pass
+    threading.Thread(target=loop, name="airdrop-commands", daemon=True).start()
+
+
+class Progress:
+    """Counts the bytes of one upload and reports them at most five times a second."""
+    INTERVAL = 0.2
+
+    def __init__(self, transfer, total, clock=time.monotonic):
+        self.transfer, self.total, self.clock = transfer, total, clock
+        self.done, self.last = 0, 0.0
+
+    def add(self, count):
+        self.done += count
+        now = self.clock()
+        if now - self.last >= self.INTERVAL:
+            self.last = now
+            events.emit("receive_progress", id=self.transfer, done=self.done, total=self.total)
+
+    def finish(self):
+        events.emit("receive_progress", id=self.transfer, done=self.done, total=self.total)
+
+
+def _expected_bytes(headers):
+    """Size of the upload body when the sender says so: Content-Length, else Apple's TotalBytes header."""
+    for name in ("Content-Length", "TotalBytes"):
+        raw = headers.get(name)
+        if raw is not None and re.fullmatch(r"[0-9]{1,15}", raw.strip()):
+            return int(raw) or None
+    return None
+
 
 
 class Approvals:
@@ -197,18 +270,19 @@ def _parse_ask(body):
     return request
 
 
-def _confirm(request):
+def _confirm(request, info=None, icon=None):
+    """Ask the user, in a separate window, whether to accept. True only for an explicit yes."""
     hook = os.environ.get("AIRDROP_CONFIRM")
     if not hook or not os.path.isabs(hook):
         LOG.error("Manca il programma di conferma; trasferimento rifiutato")
         return False
-    sender = str(request.get("SenderComputerName") or request.get("SenderPseudonym") or "Dispositivo sconosciuto")
-    files = request.get("Files", [])
-    names = [str(entry.get("FileName") or entry.get("FileBomPath")) for entry in files]
+    if info is None:
+        info, icon = preview.describe(request)
+    names = [f["name"] for f in info["files"]]
     if names:
         detail = ", ".join(names[:3])
         if len(names) > 3:
-            detail += f" (+{len(names) - 3})"
+            detail += f" (+{info['file_count'] - 3})"
     else:
         from opendrop.server import ask_items
         urls = ask_items(request)
@@ -218,8 +292,16 @@ def _confirm(request):
     # Control characters must not reach a terminal, log, or UI prompt.
     clean = lambda value: "".join(c if ord(c) >= 32 and ord(c) != 127 else " " for c in value)
     try:
-        result = subprocess.run([hook, clean(sender)[:256], clean(detail)[:4096]],
-                                timeout=CONFIRM_SECONDS, check=False)
+        with tempfile.TemporaryDirectory(prefix="airdrop-prompt-") as folder:
+            argv = [hook, clean(info["sender"])[:256], clean(detail)[:4096]]
+            shown = {key: info[key] for key in ("sender", "model", "model_label", "files", "file_count", "total_size", "items")}
+            thumbnail = preview.make_thumbnail(icon, folder)
+            if thumbnail:
+                shown["thumbnail"] = thumbnail
+            description = Path(folder) / "prompt.json"
+            description.write_text(json.dumps(shown, ensure_ascii=False), encoding="utf-8")
+            argv += ["--info", str(description)]
+            result = subprocess.run(argv, timeout=CONFIRM_SECONDS, check=False)
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         LOG.exception("Conferma non disponibile; trasferimento rifiutato")
@@ -238,19 +320,45 @@ def _response(handler, status, body=b"", close=False):
         handler.wfile.write(body)
 
 
+def _sender_identity(request, info):
+    """(identity kind, device key) for the remembered-devices list. Never used to decide whether to accept."""
+    record = request.get("SenderRecordData")
+    found = {"present": False, "fingerprint": None}
+    if isinstance(record, (bytes, bytearray)) and record:
+        ca = Path(__file__).resolve().parent / "backend/python/opendrop/certs/apple_root_ca.pem"
+        found = identity.inspect(record, ca)
+        LOG.info("Il mittente ha allegato un record Apple (%d byte, %s)", len(record),
+                 "impronta ricavata" if found["fingerprint"] else "impronta non ricavabile; uso il solo nome")
+    return store.make_device_key(info["sender"], found.get("fingerprint"))
+
+
 def _handle_ask(handler):
     body = handler._read_request_body()
     request = _parse_ask(body)
-    if not _confirm(request):
+    info, icon = preview.describe(request)
+    transfer = _transfer_id(request.get("TransferID")) or uuid.uuid4().hex
+    kind, key = _sender_identity(request, info)
+    LOG.info("Campi della richiesta: %s", ", ".join(sorted(str(k) for k in request)[:40]))
+    # The id travels with the approved request, so the upload (whose header may lack one) reports under the same id.
+    request["_event_id"] = transfer
+    # Event lines are bounded so each is written in one piece next to ordinary log output.
+    events.emit("ask", id=transfer, sender=info["sender"], model=info["model"], device_key=key, identity=kind,
+                files=info["files"][:EVENT_FILES], items=info["items"][:4], total=info["total_size"])
+    if not _confirm(request, info, icon):
+        events.emit("ask_declined", id=transfer)
         raise ReceiveError("Trasferimento rifiutato", 403)
+    events.emit("ask_accepted", id=transfer)
     if request.get("Files"):
         handler.server.approvals.approve(_peer(handler), _transfer_id(request.get("TransferID")), request)
     else:
         from opendrop.server import ask_items, open_url
-        for url in ask_items(request):
+        urls = ask_items(request)
+        for url in urls:
             if len(url) > 8192:
                 raise ReceiveError("Link troppo lungo")
             open_url(url)
+        events.emit("receive_done", id=transfer, folder=None, total=0, done=0,
+                    files=[{"name": fileinfo.clean_text(u, 300), "kind": "link", "size": None} for u in urls[:8]])
     reply = plistlib.dumps({"ReceiverModelName": handler.config.computer_model,
                            "ReceiverComputerName": handler.config.computer_name}, fmt=plistlib.FMT_BINARY)
     _response(handler, 200, reply)
@@ -446,7 +554,22 @@ def extract_cpio(archive_path, destination, requested=None, limit=TRANSFER_LIMIT
 
 
 def _handle_upload(handler):
-    request = handler.server.approvals.claim(_peer(handler), _transfer_id(handler.headers.get("TransferID")))
+    transfer = _transfer_id(handler.headers.get("TransferID"))
+    request = handler.server.approvals.claim(_peer(handler), transfer)
+    transfer = request.get("_event_id") or transfer or uuid.uuid4().hex
+    try:
+        _receive_upload(handler, request, transfer)
+    except Exception as exc:
+        cancelled = is_cancelled(transfer)
+        events.emit("receive_failed", id=transfer, cancelled=cancelled,
+                    error="Annullato dall’utente" if cancelled else
+                    (str(exc) if isinstance(exc, ReceiveError) else "Trasferimento interrotto"))
+        raise
+    finally:
+        _forget_cancel(transfer)
+
+
+def _receive_upload(handler, request, transfer):
     content_type = handler.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
     if content_type not in ("application/x-cpio", "application/x-dvzip"):
         raise ReceiveError("Formato del trasferimento non supportato", 406)
@@ -457,13 +580,19 @@ def _handle_upload(handler):
     files_dir = staging / "file"
     files_dir.mkdir(mode=0o700)
     try:
+        progress = Progress(transfer, _expected_bytes(handler.headers))
+        events.emit("receive_start", id=transfer, total=progress.total)
         with open(raw_path, "xb") as raw:
             if handler.headers.get("Expect", "").strip().lower() == "100-continue":
                 _response(handler, 100)
             for chunk in _body_parts(handler, TRANSFER_LIMIT):
+                if is_cancelled(transfer):
+                    raise ReceiveError("Trasferimento annullato dall’utente", 499)
                 raw.write(chunk)
+                progress.add(len(chunk))
             raw.flush()
             os.fsync(raw.fileno())
+        progress.finish()
         decode_archive(raw_path, content_type, decoded_path)
         names = extract_cpio(decoded_path, files_dir, request.get("Files"))
         # A freshly created final directory makes collisions impossible; link()
@@ -475,11 +604,20 @@ def _handle_upload(handler):
         except Exception:
             shutil.rmtree(final_dir)
             raise
+        listing = []
+        for name in names:
+            size = (final_dir / name).stat().st_size
+            listing.append({"name": name, "kind": fileinfo.kind_of(name), "size": size})
         shutil.rmtree(staging)
         LOG.info("File(s) received: %s (%s)", ", ".join(names), final_dir)
+        events.emit("receive_done", id=transfer, folder=str(final_dir), files=listing[:EVENT_FILES],
+                    done=sum(entry["size"] for entry in listing), total=sum(entry["size"] for entry in listing))
         _response(handler, 200, close=True)
     except Exception:
-        LOG.error("Trasferimento incompleto conservato in %s", staging)
+        if is_cancelled(transfer):
+            shutil.rmtree(staging, ignore_errors=True)    # the user asked for it: nothing worth keeping
+        else:
+            LOG.error("Trasferimento incompleto conservato in %s", staging)
         raise
 
 
@@ -584,4 +722,45 @@ def install():
                 self.close_connection = True
 
     AirDropServerHandler.do_POST = guarded_post
+    _install_sender_hooks()
+    if events.enabled() and not sys.stdin.isatty():
+        try:
+            start_command_reader()
+        except OSError:
+            pass
     _installed = True
+
+
+_send_state = {"last": 0.0}
+
+
+def _install_sender_hooks():
+    """Report the real progress of an outgoing transfer (only printed when events are enabled)."""
+    from opendrop.client import AirDropClient
+
+    def started(total):
+        events.emit("send_start", total=total)
+
+    def moved(done, total):
+        now = time.monotonic()
+        if done >= total or now - _send_state["last"] >= Progress.INTERVAL:
+            _send_state["last"] = now
+            events.emit("send_progress", done=done, total=total)
+
+    AirDropClient.start_hook = staticmethod(started)
+    AirDropClient.progress_hook = staticmethod(moved)
+    original_ask, original_upload = AirDropClient.send_ask, AirDropClient.send_upload
+
+    @functools.wraps(original_ask)
+    def send_ask(self, *args, **kwargs):
+        accepted = original_ask(self, *args, **kwargs)
+        events.emit("send_accepted" if accepted else "send_declined")
+        return accepted
+
+    @functools.wraps(original_upload)
+    def send_upload(self, *args, **kwargs):
+        done = original_upload(self, *args, **kwargs)
+        events.emit("send_done" if done else "send_failed", error=None if done else "Il trasferimento non è andato a buon fine")
+        return done
+
+    AirDropClient.send_ask, AirDropClient.send_upload = send_ask, send_upload

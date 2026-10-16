@@ -26,3 +26,11 @@ CMAKE_CXX_FLAGS='-include cstdint -Wno-error=maybe-uninitialized'.
 Radio compatibility with iOS 27 was first verified with a real transfer on
 15 October 2026 (one MT7922, one iPhone); see ../verification.json.
 The upstream fork documents tests on MT7921/MT7922 and iOS 26.
+
+Changes to the vendored OpenDrop in 1.1 (small, additive; the rest of the protocol code is as before):
+- opendrop/client.py: a folder passed to send is announced as a public.folder entry and travels with its
+  contents (symbolic links and special files are skipped); a plain file produces exactly the archive it always did.
+  Two optional class hooks, start_hook and progress_hook, report real byte counts (used by secure_receiver.py).
+- opendrop/cli.py: send accepts folders as well as files.
+Everything else (events for the window, progress, cancelling a receive, the preview of the request) lives in the
+parent directory: secure_receiver.py, transfer_events.py, preview.py, identity.py.

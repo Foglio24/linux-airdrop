@@ -3,8 +3,8 @@ Version: @VERSION@
 Architecture: amd64
 Maintainer: Foglio24 <82967977+Foglio24@users.noreply.github.com>
 Installed-Size: @SIZE@
-Depends: python3 (>= 3.14), python3-gi, python3-dbus, gir1.2-gtk-4.0, gir1.2-adw-1, gir1.2-glib-2.0, libarchive13t64, libpcap0.8t64, libnl-3-200, libnl-genl-3-200, libnl-route-3-200, libibverbs1, libdbus-1-3, libsystemd0, iw, iproute2, wpasupplicant, network-manager, bluez, kmod, pkexec, polkitd
-Recommends: gnome-shell-extension-appindicator
+Depends: python3 (>= 3.14), python3-gi, python3-dbus, gir1.2-gtk-4.0, gir1.2-adw-1, gir1.2-glib-2.0, libarchive13t64, libpcap0.8t64, libnl-3-200, libnl-genl-3-200, libnl-route-3-200, libibverbs1, libdbus-1-3, libsystemd0, iw, iproute2, wpasupplicant, network-manager, bluez, kmod, pkexec, polkitd, openssl
+Recommends: gnome-shell-extension-appindicator, python3-nautilus
 Section: net
 Priority: optional
 Homepage: https://github.com/Foglio24/linux-airdrop
@@ -12,7 +12,10 @@ Description: AirDrop between Linux and iPhone/iPad (MediaTek MT7921/MT7922)
  Send files to, and receive files from, iPhones and iPads through AirDrop on a
  PC with a MediaTek MT7921/MT7922 Wi-Fi card. Speaks AWDL through OWL and the
  AirDrop protocol through a hardened OpenDrop, with a GTK 4 / libadwaita front
- end, a tray icon, background mode and login autostart.
+ end, a tray icon, background mode and login autostart. Includes a transfer
+ history, remembered devices, drag and drop, live progress, a preview of what
+ is about to be received, a diagnostics page with guided repairs, and a
+ "Send with Linux AirDrop" entry for GNOME Files (with python3-nautilus).
  .
  Experimental: it temporarily loads patched mac80211/mt7921 modules (built for
  kernel 7.3.0-9-generic) and uses the Wi-Fi card exclusively while visible.

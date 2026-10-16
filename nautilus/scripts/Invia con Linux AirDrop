@@ -1,0 +1,11 @@
+#!/bin/sh
+# Nautilus script (works without python3-nautilus): right-click > Scripts > "Invia con Linux AirDrop".
+# Sends the selected files and folders with the Linux AirDrop that is already running, or starts it.
+[ "$#" -gt 0 ] || exit 0
+for desktop in "$HOME/.local/share/applications/it.foglio.LinuxAirDrop.desktop" /usr/share/applications/it.foglio.LinuxAirDrop.desktop; do
+    if [ -f "$desktop" ]; then
+        exec gio launch "$desktop" "$@"
+    fi
+done
+echo "Linux AirDrop non è installato" >&2
+exit 1

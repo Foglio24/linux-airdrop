@@ -10,6 +10,23 @@ Native **AirDrop between Linux and iPhone/iPad** for PCs with a **MediaTek MT792
 
 Working on the tested machine, in both directions: an iPhone sends files to the PC (`/Discover`, `/Ask`, `/Upload`), and the PC sends files to the iPhone. The iPhone can stay on **Receiving Off** (*Ricezione disattivata*) while sending to the PC. See [`verification.json`](verification.json) for what was checked, what was not, and the known limitations.
 
+### What 1.1 adds
+
+All of it is documented in [`docs/FEATURES.md`](docs/FEATURES.md). The radio code, the driver modules and the privileged helper are unchanged from 1.0.
+
+- **Transfer history** (*Cronologia*): device, direction, files and kinds, size, date, outcome, buttons to open the file or folder, clear the list. SQLite, private, no file contents.
+- **Drag and drop** of files and folders onto the window, with a highlighted drop area; folders as a ZIP (default) or natively (experimental).
+- **Preview before accepting**: file names, type icons, sizes when the sender gives them, and the sender's thumbnail, decoded in a restricted process. Nothing received is ever opened.
+- **"Invia con Linux AirDrop"** in GNOME Files (files, folders, selections) and a single running instance, so no second session starts.
+- **Live progress** per transfer (percent, MB, MB/s, time left, state), from real byte counts; cancel; several transfers.
+- **Remembered devices** (*Dispositivi*), with a note on how sure the identification is.
+- **Diagnostics** (*Diagnostica*) with green/yellow/red checks and a copyable, anonymised report; **guided repair** with attempt limits and a log.
+- **Trusted devices / automatic accepting: not implemented, on purpose.** AirDrop gives the receiver no identifier that cannot be forged or replayed, so every transfer still asks. See [`docs/TRUSTED-DEVICES.md`](docs/TRUSTED-DEVICES.md).
+
+Sending large files to the iPhone used to stall after a few hundred kB: frames to the phone went out without radio acknowledgements. 1.1 turns them on (*Visibilità → Conferme radio*) and makes the sender's TCP more persistent; the analysis, with measurements from a link emulator, is in [`docs/SENDING.md`](docs/SENDING.md) (not yet confirmed with the phone).
+
+What was and was not tested in 1.1 is in [`docs/TESTING.md`](docs/TESTING.md). Short version: the new code is covered by automated tests, a real sender talking to a real receiver in a private network namespace, and the live checks were run read-only against the working machine; **the new features have not yet been tried with an iPhone**, and the GNOME Files menu entry has not been run inside a real Files because `python3-nautilus` is not installed on the development machine.
+
 ## Requirements
 
 - Ubuntu 26.10 on amd64 (CPython 3.14, GTK 4, libadwaita), GNOME. The tray icon needs the *AppIndicator* shell extension, enabled by default on Ubuntu.
@@ -22,20 +39,20 @@ Working on the tested machine, in both directions: an iPhone sends files to the 
 
 ### Debian package (recommended)
 
-Download `linux-airdrop_1.0.0_amd64.deb` from the [Releases](https://github.com/Foglio24/linux-airdrop/releases) page and install it:
+Download the latest `linux-airdrop_<version>_amd64.deb` from the [Releases](https://github.com/Foglio24/linux-airdrop/releases) page and install it:
 
 ```sh
-sudo apt install ./linux-airdrop_1.0.0_amd64.deb
+sudo apt install ./linux-airdrop_<version>_amd64.deb
 ```
 
-Then open **Linux AirDrop** from the application menu. Removing the package (`sudo apt remove linux-airdrop`) also removes the optional passwordless helper described below. Files you received stay in your Downloads folder.
+Then open **Linux AirDrop** from the application menu. For the "Invia con Linux AirDrop" entry in GNOME Files install `python3-nautilus` (the package recommends it) and run `nautilus -q` once. If an older version is running, quit it first (**Esci**): the new one cannot hand files to a version that predates this feature. Removing the package (`sudo apt remove linux-airdrop`) also removes the optional passwordless helper described below. Files you received stay in your Downloads folder.
 
 ### From source, for the current user (no sudo)
 
 ```sh
 git clone https://github.com/Foglio24/linux-airdrop
 cd linux-airdrop
-python3 install-user.py            # add --autostart to start it at login
+python3 install-user.py            # add --autostart to start it at login; --no-files-menu skips the GNOME Files entries
 ```
 
 This copies the program to `~/.local/share/linux-airdrop` and adds the launcher `~/.local/share/applications/it.foglio.LinuxAirDrop.desktop`. You can also run it in place with `./start.sh`. To uninstall, quit the app and delete those two paths.
@@ -52,11 +69,13 @@ The Python libraries the protocol needs are bundled under `backend/python`.
 
 To **send from the PC**: with a session running press **Invia file…** (*Send files…*), choose the files, then the recipient. The phone must be unlocked, receiving set to Everyone, and the Share sheet closed.
 
+You can also **drag files or folders onto the window**, choose **Invia con Linux AirDrop** from the context menu of GNOME Files, or run `linux-airdrop FILE…`; if the PC is not visible yet the app asks before turning AirDrop on. `linux-airdrop --diagnose` prints the diagnostics report in a terminal.
+
 If the PC does not show up, leave the AirDrop sheet open for about a minute. In **Visibilità** (*Visibility*) you can change the Wi-Fi channel (6, 36, 44) and the Wi-Fi Direct option. **Registro** (*Log*; menu ☰ or Ctrl+L) shows what is going on and has a copy button; every session is also saved under `~/.local/state/linux-airdrop/`.
 
 ## Interface, tray icon and background
 
-The interface uses GTK 4 and libadwaita: it follows the GNOME style, light/dark theme and system shortcuts. Settings (name, channel, Wi-Fi Direct, duration, start-up options) are stored in `~/.config/linux-airdrop/settings.json`.
+The interface uses GTK 4 and libadwaita: it follows the GNOME style, light/dark theme and system shortcuts. Settings (name, channel, Wi-Fi Direct, duration, start-up options, remembering transfers, automatic repair) are stored in `~/.config/linux-airdrop/settings.json`; history and repair state are in `~/.local/state/linux-airdrop/`.
 
 - **Tray icon.** The logo appears in the top bar: brighter while the PC is visible, dimmed otherwise. Its menu has *Apri Linux AirDrop* (open the window), the state, *Rendi visibile / Interrompi visibilità* and *Esci* (quit).
 - **Background.** With **Applicazione → Continua in background** on (default), closing the window stops nothing: the app stays in the tray, and a visible PC keeps receiving, with a notification that has an **Interrompi** (*Stop*) button. Reopen the window from the tray icon or by launching the app again. Receive requests and received files arrive as notifications; every receive still asks for confirmation. If a session ends because of an error or a timeout while the window is closed you get a notification and the app stays in the tray. Without a tray icon, closing the window with no session running quits the app. **Esci** (menu or Ctrl+Q) always stops the session and quits. With the option off, closing the window means quit.
@@ -100,11 +119,15 @@ Things found along the way, for anyone debugging something similar:
 
 - `app.py`: GTK 4 / libadwaita front end. `tray.py`: StatusNotifierItem and dbusmenu tray icon spoken directly over D-Bus. `confirm.py`: the confirmation window for every receive.
 - `root_bridge.py`, `p2p_anchor.py`, `awdl_diag.py`: the small privileged bridge (newline-delimited JSON on stdout, `stop` on stdin) that prepares the card, loads the driver modules, creates the group and the monitors, runs OWL, and restores everything. No HTTP server runs as root.
-- `secure_receiver.py`: hardening around OpenDrop's server (consent before every receive, archive path checks, no overwrites, incomplete transfers are not reported as complete).
+- `secure_receiver.py`: hardening around OpenDrop's server (consent before every receive, archive path checks, no overwrites, incomplete transfers are not reported as complete), plus the progress/cancel events (`transfer_events.py`) and the preview of the request (`preview.py`, `identity.py`).
+- `store.py` (SQLite history and remembered devices), `progress.py` (speed and time left from real counters), `outgoing.py` (what may be sent, ZIP of folders), `fileinfo.py` (kinds, safe text, number formats).
+- `diagnostics.py` and `repair.py`: the health checks, the report, the known faults and the attempt limits. `ui_history.py`, `ui_devices.py`, `ui_diagnostics.py`, `ui_transfers.py`: the pages of the window.
+- `nautilus/`: the GNOME Files extension and script.
+- `docs/`: [features](docs/FEATURES.md), [sending to the iPhone](docs/SENDING.md), [trusted devices](docs/TRUSTED-DEVICES.md), [testing](docs/TESTING.md).
 - `system_helper.py`, `autostart.py`: the passwordless helper and the login entry.
 - `backend/`: OWL (`owl-modern`, plus the original `owl`), the vendored OpenDrop and its Python dependencies, the BLE advertisement script, and `driver-compat/` with the three kernel modules, their patches and sources.
 - `packaging/`: the script that builds the `.deb` (`packaging/build-deb.sh`).
-- `tests/`: unit tests (run each file with `python3 -I -B tests/test_<name>.py`; the GUI and tray tests need a desktop session).
+- `tests/`: automated tests (run each file with `python3 -I -B tests/test_<name>.py`, or all with `tests/run-all.sh`; the GUI, tray and single-instance tests need a desktop session, the loopback and interface tests need `unshare -Urn`).
 
 ## Behaviour and checks
 
