@@ -5,7 +5,9 @@ import json
 import os
 import platform
 from pathlib import Path
+from dataclasses import replace
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -13,8 +15,10 @@ import threading
 import time
 import uuid
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 BASE = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE))
+import radio_compat
 STATE = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "linux-airdrop"
 
 
@@ -64,17 +68,38 @@ def radio_capability(iface):
 
 
 def driver_trial_available():
-    folder = BASE / "backend/driver-compat"
-    try:
-        manifest = json.loads((folder / "manifest.json").read_text())
-        return manifest.get("kernel") == platform.release() and all((folder / name).is_file() for name in ("mac80211.ko", "mt792x-lib.ko", "mt7921e.ko"))
-    except (OSError, ValueError):
-        return False
+    return radio_compat.verify_legacy_bundle(BASE / "backend/driver-compat", platform.release()).verified
+
+
+def radio_inventory(iface):
+    """Read capabilities once; kernel flags are probed by the privileged bridge."""
+    driver, pci, output = None, None, ""
+    if iface:
+        device = Path("/sys/class/net") / iface
+        driver = (device / "device/driver").resolve().name
+        try:
+            pci = (device / "device/device").read_text().strip().lower()
+            phy = (device / "phy80211").resolve().name
+            done = subprocess.run(["iw", "phy", phy, "info"], capture_output=True, text=True,
+                                  timeout=4, env=dict(os.environ, LANG="C", LC_ALL="C"))
+            output = done.stdout if done.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    capabilities = radio_compat.RadioCapabilities(
+        driver=driver, hardware_supported=driver == "mt7921e" and pci in radio_compat.SUPPORTED_PCI_IDS,
+        pci_id=pci, missing_tools=tuple(name for name in ("iw", "ip", "nmcli", "wpa_supplicant", "wpa_cli", "pkexec")
+                                      if shutil.which(name) is None),
+        **radio_compat.parse_iw_capabilities(output))
+    legacy = radio_compat.verify_legacy_bundle(BASE / "backend/driver-compat", platform.release())
+    return capabilities, legacy, radio_compat.select_plan(capabilities, legacy)
 
 
 if "--check" in sys.argv:
-    print(json.dumps({"wifi": hardware(), "active_monitor": radio_capability(hardware()), "backend": (BASE / "backend/owl").is_file(),
+    card = hardware()
+    capabilities, legacy, plan = radio_inventory(card)
+    print(json.dumps({"wifi": card, "active_monitor": capabilities.active_monitor, "backend": (BASE / "backend/owl").is_file(),
                       "ios": "27: da verificare su dispositivo reale", "mode": "Apple AirDrop / AWDL",
+                      "radio_plan": plan.as_dict(), "legacy_verified": legacy.verified,
                       "restart_required": recovery_needed()}, ensure_ascii=False))
     sys.exit(0)
 
@@ -85,8 +110,10 @@ if "--diagnose" in sys.argv:
     import system_helper
     probe = diagnostics.System()
     card = hardware()
+    capabilities, legacy, plan = radio_inventory(card)
     facts = {"cli": True, "session_active": probe.exists("sys/class/net/awdl0"), "session_starting": False, "iface": card,
-             "channel": 6, "wifi_direct": True, "radio_ready": radio_capability(card), "trial_ready": driver_trial_available(),
+             "channel": 6, "wifi_direct": True, "radio_ready": capabilities.active_monitor, "trial_ready": legacy.verified,
+             "radio_plan": plan.as_dict(),
              "receiver_pid": next((pid for pid, _, argv in probe.processes() if any(a.endswith("opendrop_runner.py") for a in argv)), None),
              "ble_running": any(a.endswith("blewake.py") for _, _, argv in probe.processes() for a in argv),
              "helper": system_helper.status(), "recovery_needed": recovery_needed()}
@@ -109,7 +136,6 @@ import diagnostics
 import getpass
 import outgoing
 import repair
-import shutil
 import system_helper
 import transfer_events as tev
 from fileinfo import clean_text, format_size, kind_icon, kind_of
@@ -122,7 +148,7 @@ from ui_history import HistoryPage
 from ui_transfers import FINAL_STATES, Transfer, TransferList
 
 APP_ID = "it.foglio.LinuxAirDrop"
-CHANNELS = (6, 36, 44)
+CHANNELS = (6, 44)   # the iPhone's channel sequence only ever holds 6, 44, 100 and 149; 36 was never discovered
 DURATIONS = (("25m", "25 minuti", 1500), ("2h", "2 ore", 7200), ("always", "Finché non la interrompo", 0))
 # How often the receiver re-announces itself. The phone, when idle, is on our channel for one slot in sixteen
 # (about 65 ms per 1.048 s); at 5 s an announcement was heard only by luck, tens of seconds late. A period a
@@ -197,6 +223,8 @@ class SendJob:
 
 
 class AirDrop(Adw.Application):
+    data_rate = None   # OWL -R for data frames; None keeps OWL's default (12 Mbit/s)
+
     def __init__(self, screenshot=None, activate_radio=False, fixed_radio=True, radio_channel=None, fixed_ack=None, go_anchor=None, background_start=False):
         # HANDLES_OPEN: "Invia con Linux AirDrop" in Files and a second launch with files reach the running instance.
         flags = Gio.ApplicationFlags.HANDLES_OPEN | (Gio.ApplicationFlags.NON_UNIQUE if screenshot else Gio.ApplicationFlags.DEFAULT_FLAGS)
@@ -241,8 +269,9 @@ class AirDrop(Adw.Application):
         self.log_view = None
         self.known_files = set()
         self.iface = hardware()
-        self.radio_ready = radio_capability(self.iface)
-        self.trial_ready = driver_trial_available()
+        self.compat_capabilities, self.compat_legacy, self.compat_plan = radio_inventory(self.iface)
+        self.radio_ready = self.compat_plan.mode == "native"
+        self.trial_ready = self.compat_legacy.verified
         self.log_dirty = False
         self.session_log = None
         self.go_wanted = self.go_anchor
@@ -388,9 +417,9 @@ class AirDrop(Adw.Application):
         # Preferences.
         options = Adw.PreferencesGroup(title="Visibilità")
         self.name = Adw.EntryRow(title="Nome nel menu AirDrop", text=self.display_name)
-        self.go_row = Adw.SwitchRow(title="Wi-Fi Direct", subtitle="Consigliato · funziona solo sul canale 6", use_markup=False)
+        self.go_row = Adw.SwitchRow(title="Wi-Fi Direct", subtitle="Consigliato · il canale deve essere consentito nella tua zona", use_markup=False)
         self.go_row.set_active(self.go_anchor)
-        self.channel = Adw.ComboRow(title="Canale Wi-Fi", model=Gtk.StringList.new(["6 · consigliato", "36", "44"]))
+        self.channel = Adw.ComboRow(title="Canale Wi-Fi", model=Gtk.StringList.new(["6 · 2,4 GHz · scoperta più rapida", "44 · 5 GHz"]))
         self.channel.set_selected(CHANNELS.index(self.radio_channel))
         self.go_row.connect("notify::active", self.go_toggled)
         self.channel.connect("notify::selected", self.channel_changed)
@@ -632,6 +661,9 @@ class AirDrop(Adw.Application):
         elif not self.iface:
             self.show_blocked("Scheda Wi-Fi non trovata", "Serve una scheda MediaTek MT7921 o MT7922.", "Scheda MediaTek MT7921/MT7922 non trovata.")
             note = "Questa versione supporta soltanto le schede MediaTek MT7921/MT7922."
+        elif not self.compat_plan.available:
+            self.show_blocked("Collegamento non disponibile", self.compat_plan.summary, self.compat_plan.summary)
+            note = " ".join((self.compat_plan.summary, *self.compat_plan.details))
         elif not self.radio_ready and not self.trial_ready:
             self.show_blocked("Collegamento non disponibile", "Il driver deve supportare active monitor per usare AirDrop.", "Driver Wi-Fi da correggere: active monitor non supportato.")
             note = "Il kernel attuale non offre active monitor e non c'è una correzione compatibile con questa versione."
@@ -674,11 +706,10 @@ class AirDrop(Adw.Application):
         return CHANNELS[self.channel.get_selected()]
 
     def channel_changed(self, *_):
-        # Wi-Fi Direct exists only on channel 6; remember the user's choice for when they return to it.
-        on_six = self.current_channel() == 6
+        # The privileged preflight checks that this channel permits a GO in the current regulatory domain.
         self.go_row.set_sensitive(False)
-        self.go_row.set_active(self.go_wanted and on_six)
-        self.go_row.set_sensitive(on_six)
+        self.go_row.set_active(self.go_wanted)
+        self.go_row.set_sensitive(True)
 
     def go_toggled(self, row, _):
         if row.get_sensitive():
@@ -687,7 +718,7 @@ class AirDrop(Adw.Application):
     def lock_options(self, locked):
         self.name.set_sensitive(not locked)
         self.channel.set_sensitive(not locked)
-        self.go_row.set_sensitive(not locked and self.current_channel() == 6)
+        self.go_row.set_sensitive(not locked)
         self.ack_row.set_sensitive(not locked)
 
     def toast(self, text, button=None, action=None):
@@ -832,7 +863,15 @@ class AirDrop(Adw.Application):
             self.user_stop = True
             self.stop_session()
             return
-        use_trial = not radio_capability(self.iface)
+        capabilities = replace(self.compat_capabilities, active_monitor=radio_capability(self.iface))
+        self.compat_plan = radio_compat.select_plan(capabilities, self.compat_legacy)
+        if not self.compat_plan.available:
+            self.set_status(self.compat_plan.summary, True)
+            return
+        use_trial = self.compat_plan.mode == "legacy"
+        if not use_trial and not self.go_row.get_active():
+            self.set_status("Con il driver di sistema attiva Wi-Fi Direct.", True)
+            return
         if use_trial and not driver_trial_available():
             self.set_status("Driver Wi-Fi senza active monitor: AirDrop non può essere attivato.", True)
             return
@@ -849,7 +888,7 @@ class AirDrop(Adw.Application):
         self.user_stop = False
         self.end_reason = None
         self.display_name = self.name.get_text().strip()[:64] or socket.gethostname()
-        self.go_anchor = self.go_row.get_active() and self.current_channel() == 6
+        self.go_anchor = self.go_row.get_active()
         self.persist()
         self.refresh_helper()
         self.destination.mkdir(parents=True, exist_ok=True)
@@ -878,6 +917,8 @@ class AirDrop(Adw.Application):
             argv.append("--fixed-radio")
             if self.radio_ack:
                 argv.append("--fixed-ack")
+        if self.data_rate:
+            argv += ["--data-rate", self.data_rate]
         self.bridge = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, text=True, bufsize=1)
         if not self.held:
@@ -898,6 +939,11 @@ class AirDrop(Adw.Application):
 
     def bridge_event(self, event):
         kind = event.get("event")
+        if kind == "radio-capability" and event.get("name") == "skip_tx" and type(event.get("supported")) is bool:
+            self.compat_capabilities = replace(self.compat_capabilities,
+                                               skip_tx="supported" if event["supported"] else "unsupported")
+            self.compat_plan = radio_compat.select_plan(self.compat_capabilities, self.compat_legacy)
+            return False
         if kind == "ready":
             if self.closing:
                 self.stop_session()
@@ -1436,6 +1482,8 @@ class AirDrop(Adw.Application):
         elif kind == "send_progress":
             transfer.state = "running"
             transfer.meter.update(event["done"] or 0, event["total"])
+        elif kind == "send_waiting_confirmation":
+            transfer.state = "confirming"
         self.sync_transfers()
         return False
 
@@ -1655,7 +1703,7 @@ class AirDrop(Adw.Application):
                 "receiver_ifindex": self.receiver_ifindex,
                 "announce_age": None if self.last_announce is None else time.monotonic() - self.last_announce,
                 "ble_running": bool(self.ble is not None and self.ble.poll() is None), "helper": self.helper,
-                "radio_ack": bool(self.radio_ack),
+                "radio_ack": bool(self.radio_ack), "radio_plan": self.compat_plan.as_dict(),
                 "recovery_needed": recovery_needed()}
 
     def known_pids(self):
@@ -1850,12 +1898,14 @@ if __name__ == "__main__":
     parser.add_argument("--activate", action="store_true")
     parser.add_argument("--background", action="store_true", help="parte senza finestra, solo con l'icona nella barra")
     parser.add_argument("--go-anchor", dest="go_anchor", action="store_true", default=None,
-                        help="usa un gruppo Wi-Fi Direct temporaneo (predefinito, solo canale 6)")
+                        help="usa un gruppo Wi-Fi Direct temporaneo (predefinito, canali 6 o 44)")
     parser.add_argument("--no-go-anchor", dest="go_anchor", action="store_false",
                         help="solo interfacce monitor, senza Wi-Fi Direct")
     parser.add_argument("--fixed-ack", dest="fixed_ack", action="store_true", default=None,
                         help="conferme radio per i pacchetti inviati (predefinito: come nelle impostazioni)")
     parser.add_argument("--no-fixed-ack", dest="fixed_ack", action="store_false", help="nessuna conferma radio")
+    parser.add_argument("--data-rate", default=os.environ.get("LINUX_AIRDROP_RATE"),
+                        help="velocità radio dei dati verso il telefono: 6..54 Mbit/s, mcsN o mcsN-sgi (predefinito 12)")
     parser.add_argument("--fixed-radio", action="store_true", default=True)
     parser.add_argument("--channel-hopping", dest="fixed_radio", action="store_false")
     parser.add_argument("--channel", type=int, choices=CHANNELS, default=None)
@@ -1875,6 +1925,7 @@ if __name__ == "__main__":
             pass
         sys.exit(78)
     app = AirDrop(args.screenshot, args.activate, args.fixed_radio, args.channel, args.fixed_ack, args.go_anchor, args.background)
+    app.data_rate = args.data_rate
     watch_signals(app)
     # Paths go to the running instance, if there is one: no second session is ever started.
     sys.exit(app.run([sys.argv[0], *(str(Path(f).expanduser().absolute()) for f in args.files)]))

@@ -314,6 +314,54 @@ class BackgroundBehaviour(unittest.TestCase):
         self.assertEqual(argv[:2], ["pkexec", "/usr/local/lib/linux-airdrop/airdrop-bridge"])
         self.assertNotIn("python3", " ".join(argv))
 
+    def test_native_driver_requires_wifi_direct_before_starting_a_bridge(self):
+        old_channel, old_go = self.app.channel.get_selected(), self.app.go_wanted
+        try:
+            for selected, enabled in ((0, False), (1, False)):
+                with self.subTest(channel=selected, wifi_direct=enabled):
+                    self.app.channel.set_selected(selected)
+                    self.app.go_row.set_active(enabled)
+                    with patch.object(app_module, "radio_capability", return_value=True), \
+                            patch.object(app_module.subprocess, "Popen") as spawn:
+                        self.app.toggle_session()
+                    spawn.assert_not_called()
+                    self.assertIsNone(self.app.bridge)
+                    self.assertIn("Wi-Fi Direct", self.app.status.get_label())
+        finally:
+            self.app.go_wanted = old_go
+            self.app.channel.set_selected(old_channel)
+            self.app.channel_changed()
+
+    def test_patched_driver_still_allows_monitor_only_mode(self):
+        old_go = self.app.go_row.get_active()
+        started = []
+        try:
+            self.app.go_row.set_active(False)
+            with patch.object(app_module, "radio_capability", return_value=False), \
+                    patch.object(self.app, "compat_capabilities", app_module.radio_compat.RadioCapabilities(
+                        "mt7921e", True, False, True, pci_id="0x0616")), \
+                    patch.object(self.app, "compat_legacy", app_module.radio_compat.LegacyBundle(verified=True)), \
+                    patch.object(app_module, "driver_trial_available", return_value=True), \
+                    patch.object(app_module.system_helper, "status", return_value="ready"), \
+                    patch.object(app_module.subprocess, "Popen", lambda argv, **kwargs: started.append(argv) or FakeProcess(argv)):
+                self.app.toggle_session()
+            self.assertIn("--driver-trial", started[0])
+            self.assertNotIn("--go-anchor", started[0])
+        finally:
+            self.app.bridge = None
+            self.app.go_row.set_active(old_go)
+
+    def test_native_go_can_select_a_five_ghz_channel_and_pass_it_to_the_bridge(self):
+        old_channel = self.app.channel.get_selected()
+        try:
+            self.app.channel.set_selected(1)
+            self.app.go_row.set_active(True)
+            argv = self.start_with("ready", "25m")
+            self.assertIn("--go-anchor", argv)
+            self.assertEqual(argv[argv.index("--channel") + 1], "44")
+        finally:
+            self.app.channel.set_selected(old_channel)
+
     def test_without_the_helper_the_old_password_path_is_used(self):
         argv = self.start_with("missing", "25m")
         self.assertEqual(argv[:4], ["pkexec", "/usr/bin/python3", "-I", "-B"])

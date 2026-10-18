@@ -13,6 +13,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -191,6 +192,36 @@ class ReceiverBoundaries(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class TailAcknowledgement(unittest.TestCase):
+    """While an upload is silent, our cumulative ACK is repeated (keepalive probes) instead of sent once."""
+
+    def silent_peer_ack_age(self, keepalive):
+        with socket.create_server(("127.0.0.1", 0)) as server:
+            client = socket.create_connection(server.getsockname())
+            accepted, _ = server.accept()
+            with client, accepted:
+                if keepalive:
+                    receiver._keep_acknowledging(accepted)
+                client.sendall(b"body bytes")
+                accepted.recv(64)
+                time.sleep(3.2)
+                info = accepted.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 104)
+                return struct.unpack_from("8B13I", info)[8 + 12]   # tcpi_last_ack_recv, ms
+
+    def test_options_are_set_on_the_upload_socket(self):
+        with socket.socket() as sock:
+            receiver._keep_acknowledging(sock)
+            self.assertEqual(sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE), 1)
+            self.assertEqual(sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE), 1)
+            self.assertEqual(sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL), 1)
+            self.assertEqual(sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT), receiver.READ_TIMEOUT)
+
+    def test_a_silent_sender_keeps_receiving_our_ack(self):
+        # Every probe makes the peer answer, so the last ACK we received stays recent.
+        self.assertGreater(self.silent_peer_ack_age(False), 2500)
+        self.assertLess(self.silent_peer_ack_age(True), 1500)
 
 
 if __name__ == "__main__":

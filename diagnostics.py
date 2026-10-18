@@ -244,9 +244,15 @@ def check_all(system, facts, slow=None, base=None):
     wanted = manifest.get("kernel")
     # The stock driver supports AirDrop by itself only if the support does not come from our patched modules.
     native = bool(facts.get("radio_ready")) and count < len(NATIVE_MODULES)
-    if native:
-        checks.append(Check("kernel", "Versione del kernel", OK, f"Linux {release}: il driver supporta già AirDrop",
-                            [f"Kernel: {release}"]))
+    plan = facts.get("radio_plan")
+    if isinstance(plan, dict) and plan.get("mode") == "blocked":
+        checks.append(Check("kernel", "Compatibilità radio", ERROR, plan.get("summary", "Collegamento non disponibile"),
+                            [f"Kernel: {release}", *plan.get("details", [])]))
+    elif native:
+        pending = isinstance(plan, dict) and plan.get("state") == "probe_required"
+        checks.append(Check("kernel", "Compatibilità radio", WARN if pending else OK,
+                            f"Linux {release}: " + (plan["summary"] if isinstance(plan, dict) else "monitor attivo disponibile"),
+                            [f"Kernel: {release}", "Il funzionamento con un dispositivo Apple va verificato con uno scambio reale."]))
     elif wanted and release == wanted and facts.get("trial_ready"):
         checks.append(Check("kernel", "Versione del kernel", OK, f"Linux {release}: la correzione del driver è compatibile",
                             [f"Kernel: {release}", f"Correzione costruita per: {wanted}"]))
@@ -319,7 +325,7 @@ def check_all(system, facts, slow=None, base=None):
 
     # --- Wi-Fi Direct
     groups = [name for name in system.listdir(net) if name.startswith("p2p-")]
-    want_p2p = bool(facts.get("wifi_direct")) and facts.get("channel") == 6
+    want_p2p = bool(facts.get("wifi_direct")) and facts.get("channel") in (6, 36, 44)
     if not want_p2p:
         checks.append(Check("p2p", "Wi-Fi Direct", IDLE, "Disattivato nelle impostazioni (solo monitor)"))
     elif groups:

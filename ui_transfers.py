@@ -9,7 +9,7 @@ from gi.repository import GLib, Gtk
 from fileinfo import format_duration, format_size, format_speed, summarize_names
 from progress import Meter
 
-ACTIVE_STATES = ("asking", "waiting", "queued", "searching", "preparing", "running")
+ACTIVE_STATES = ("asking", "waiting", "queued", "searching", "preparing", "running", "confirming")
 FINAL_STATES = ("done", "failed", "cancelled", "declined")
 
 
@@ -44,7 +44,7 @@ class Transfer:
     @property
     def cancellable(self):
         # While the user's own confirmation window is open there is nothing to cancel from here.
-        return self.state in ("waiting", "queued", "searching", "preparing", "running") and not self.cancel_requested
+        return self.state in ("waiting", "queued", "searching", "preparing", "running", "confirming") and not self.cancel_requested
 
     def names(self):
         names = [f["name"] for f in self.files] or list(self.items)
@@ -67,6 +67,8 @@ def present(t, now=None):
         line = "Ricerca del dispositivo Apple…"
     elif t.state == "preparing":
         line = "Preparazione dei file…"
+    elif t.state == "confirming":
+        line = "Invio in completamento · in attesa della conferma del dispositivo…"
     elif t.state == "running":
         parts = []
         if snap["total"]:
@@ -92,7 +94,7 @@ def present(t, now=None):
     elif t.state == "declined":
         line, css = "Rifiutato", "warning"
     return {"title": title, "names": t.names(), "line": line, "fraction": fraction,
-            "indeterminate": t.state in ("running", "preparing", "searching") and fraction is None,
+            "indeterminate": t.state in ("running", "preparing", "searching", "confirming") and fraction is None,
             "css": css, "icon": "folder-download-symbolic" if receiving else "document-send-symbolic",
             "cancellable": t.cancellable}
 

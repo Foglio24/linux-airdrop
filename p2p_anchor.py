@@ -17,6 +17,46 @@ GLOBAL_CONTROL = Path("/run/wpa_supplicant")
 IPV6_CONF = Path("/proc/sys/net/ipv6/conf")
 NAME = re.compile(r"[A-Za-z0-9_.:-]{1,15}\Z")
 MAC = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\Z")
+CHANNEL_FREQUENCIES = {6: 2437, 36: 5180, 44: 5220}
+FREQUENCY_LINE = re.compile(r"^\s*\*\s*(\d+)(?:\.\d+)?\s+MHz\s+\[(\d+)\](.*)$")
+GO_RESTRICTION = re.compile(
+    r"\b(?:disabled|radar|dfs)\b|\bno(?:[\s_-]*ir|\s+initiating\s+radiation|\s+ibss)\b|\bpassive[\s_-]+scan\b",
+    re.IGNORECASE)
+
+
+def permitted_frequency(capabilities, channel):
+    """Require an explicitly advertised, unrestricted GO frequency.
+
+    NO-IR forbids initiating the group. DFS/radar channels are deliberately not
+    used, even when their current DFS state says available. Continuation lines
+    belong only to the preceding frequency, not to a later band or section.
+    This is a read-only preflight; cfg80211 and the supplicant still enforce
+    regulatory changes that happen after the snapshot.
+    """
+    if channel not in CHANNEL_FREQUENCIES:
+        raise RuntimeError("La modalità Wi-Fi Direct supporta solo i canali 6, 36 e 44")
+    frequency = CHANNEL_FREQUENCIES[channel]
+    records, current = [], None
+    for raw in capabilities.splitlines():
+        line = raw.expandtabs(8)
+        match = FREQUENCY_LINE.fullmatch(line)
+        if match:
+            current = None
+            if int(match[1]) == frequency:
+                if int(match[2]) != channel:
+                    raise RuntimeError("Il canale Wi-Fi richiesto non corrisponde alla frequenza dichiarata dal driver")
+                current = {"indent": len(line) - len(line.lstrip()), "text": [match[3]]}
+                records.append(current)
+        elif current is not None and line.strip():
+            if len(line) - len(line.lstrip()) > current["indent"]:
+                current["text"].append(line.strip())
+            else:
+                current = None
+    if not records:
+        raise RuntimeError(f"Il driver non dichiara il canale {channel} ({frequency} MHz): Wi-Fi Direct non può avviarsi")
+    if any(GO_RESTRICTION.search(" ".join(record["text"])) for record in records):
+        raise RuntimeError(f"Il canale {channel} ({frequency} MHz) è disabilitato o soggetto a restrizioni NO-IR/DFS/radar")
+    return frequency
 
 
 def interfaces(output):
@@ -46,9 +86,10 @@ class GoAnchor:
     def __init__(self, iface, phy, channel, command, emit):
         if not NAME.fullmatch(iface) or not re.fullmatch(r"phy\d+", phy):
             raise RuntimeError("Interfaccia Wi-Fi Direct non valida")
-        if channel != 6:
-            raise RuntimeError("La modalità Wi-Fi Direct richiede il canale 6")
+        if channel not in CHANNEL_FREQUENCIES:
+            raise RuntimeError("La modalità Wi-Fi Direct supporta solo i canali 6, 36 e 44")
         self.iface, self.phy, self.channel = iface, phy, channel
+        self.frequency = CHANNEL_FREQUENCIES[channel]
         self.command, self.emit = command, emit
         self.process = None
         self.runtime = None
@@ -78,6 +119,7 @@ class GoAnchor:
         capabilities = self.command(["iw", "phy", self.phy, "info"])
         if not re.search(r"^\s*\* P2P-GO\s*$", capabilities, re.MULTILINE):
             raise RuntimeError("La scheda Wi-Fi non supporta Wi-Fi Direct P2P-GO")
+        permitted_frequency(capabilities, self.channel)
         return found
 
     def _cli(self, iface, *args, check=True):
@@ -187,7 +229,7 @@ class GoAnchor:
                 if time.monotonic() >= deadline:
                     raise RuntimeError("Il servizio Wi-Fi Direct non risponde")
                 time.sleep(0.1)
-            if self._cli(self.iface, "p2p_group_add", "freq=2437") != "OK":
+            if self._cli(self.iface, "p2p_group_add", f"freq={self.frequency}") != "OK":
                 raise RuntimeError("Impossibile creare il gruppo Wi-Fi Direct")
             deadline = time.monotonic() + 8
             observed_group = False
@@ -214,7 +256,7 @@ class GoAnchor:
                         # initially report "P2P GO - group formation".
                         time.sleep(0.1)
                         continue
-                    if status.get("freq") != "2437":
+                    if status.get("freq") != str(self.frequency):
                         if status.get("freq"):
                             raise RuntimeError("Il gruppo Wi-Fi Direct usa un canale diverso da quello richiesto")
                         time.sleep(0.1)
@@ -222,7 +264,7 @@ class GoAnchor:
                     self.group = group
                     self._keep_out_of_network_manager(group["name"])
                     self._drop_group_ipv6(group["name"])
-                    self.emit("status", message="Collegamento Wi-Fi Direct temporaneo pronto sul canale 6.")
+                    self.emit("status", message=f"Collegamento Wi-Fi Direct temporaneo pronto sul canale {self.channel}.")
                     return group["name"], mac
                 time.sleep(0.1)
             if observed_group:

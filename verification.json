@@ -49,8 +49,8 @@
   "pending_hardware_test": "If discovery stops after some minutes while the session is up: restart only blewake.py (new BLE tag) and see whether the phone reconnects, before restarting the radio session. Not yet reproduced since the 0.5 s announce fix.",
   "last_kernel_error": "2026-10-14 23:37:48 Europe/Rome: drv_unassign_vif_chanctx warning followed by ieee80211_free_chanctx stale list-pointer OOPS while deleting paired active monitor.",
   "current_boot_recovery": "Trial stopped normally; stock mac80211 version verified and awdl0 removed.",
-  "next_step": "Send a 5 MB file to the iPhone with 'Conferme radio' on (default), then receive one from it; read the 'TCP:' line in the log. Then the 1.1 feature checks.",
-  "updated": "2026-10-16",
+  "next_step": "Repeat large receives on channel 44 to confirm the keepalive fix; send a multi-MB file from the PC to the iPhone.",
+  "updated": "2026-10-18",
   "go_anchor": {
     "status": "default mode; verified end to end on 2026-10-15 after the interface-selection fix",
     "source": "https://github.com/t4t5/omdrop-owl/pull/55",
@@ -105,5 +105,6 @@
     "fix": "radio_ack setting on by default (--fixed-ack -> OWL -A, 15 hardware tries on MT7922); sender TCP thin linear timeouts + RTO max 2 s; 90 s stall limit; TCP_INFO report in the log; >100 MB warning. Root-side files unchanged (helper stays 'ready').",
     "status": "small send confirmed with the iPhone; large sends not yet verified",
     "first_real_check_after_fix": "2026-10-16 12:03, radio acknowledgements on: a 62 KB image sent to the iPhone completed; 1.5 MB received from the iPhone in 3.3 s (same as before, so receiving is not slowed down). A multi-megabyte send has NOT been tried yet."
-  }
+  },
+  "v1_2_real_device": "AnduinOS 2.0.4, Linux 7.0.0-38-generic, stock mt7921e (MT7922), Wi-Fi Direct anchor. iPhone->PC 5.56 MB photo on channel 6: complete (~2 min). iPad->PC 2.85 MB PDF on channel 44: stopped at 91 % before the receiver keepalive fix, complete in ~12 s after it. Receives with radio ACKs off or data rate 36 Mbit/s stopped at 97-99 %. Channel 36: never discovered. PC->iPhone: small files only."
 }

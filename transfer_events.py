@@ -16,7 +16,7 @@ PREFIX = "@@airdrop "
 KINDS = frozenset({
     "ask", "ask_accepted", "ask_declined",
     "receive_start", "receive_progress", "receive_done", "receive_failed",
-    "send_accepted", "send_declined", "send_start", "send_progress", "send_done", "send_failed",
+    "send_accepted", "send_declined", "send_start", "send_progress", "send_waiting_confirmation", "send_done", "send_failed",
 })
 _lock = threading.Lock()
 

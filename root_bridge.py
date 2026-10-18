@@ -65,6 +65,90 @@ def command(args, check=True):
     return output.strip()
 
 
+def _netlink_attributes(payload):
+    while payload:
+        if len(payload) < 4:
+            raise RuntimeError("Attributo netlink incompleto")
+        size, kind = struct.unpack_from("=HH", payload)
+        padded = (size + 3) & ~3
+        if size < 4 or padded > len(payload):
+            raise RuntimeError("Lunghezza attributo netlink non valida")
+        yield kind & 0x3fff, payload[4:size]
+        payload = payload[padded:]
+
+
+def _generic_netlink_request(channel, family, command_id, attributes, sequence):
+    port = channel.getsockname()[0]
+    body = struct.pack("=BBH", command_id, 1, 0) + attributes
+    request = struct.pack("=IHHII", 16 + len(body), family, 5, sequence, port) + body
+    channel.sendto(request, (0, 0))  # NLM_F_REQUEST | NLM_F_ACK
+    replies = []
+    deadline = time.monotonic() + 3
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Nessuna conferma dal kernel")
+        channel.settimeout(remaining)
+        packet, _, flags, sender = channel.recvmsg(65536)
+        if sender[0] != 0:
+            continue
+        if flags & socket.MSG_TRUNC:
+            raise RuntimeError("Risposta netlink troncata")
+        while packet:
+            if len(packet) < 16:
+                raise RuntimeError("Messaggio netlink incompleto")
+            size, kind, _, seq, pid = struct.unpack_from("=IHHII", packet)
+            padded = (size + 3) & ~3
+            if size < 16 or padded > len(packet):
+                raise RuntimeError("Lunghezza messaggio netlink non valida")
+            data, packet = packet[16:size], packet[padded:]
+            if seq != sequence or pid not in (0, port):
+                continue
+            if kind == 2:  # NLMSG_ERROR carries both error and success ACKs.
+                if len(data) < 20:
+                    raise RuntimeError("Conferma netlink incompleta")
+                error = struct.unpack_from("=i", data)[0]
+                original = struct.unpack_from("=IHHII", data, 4)
+                if original[1] != family or original[3] != sequence:
+                    raise RuntimeError("Conferma netlink per un altro comando")
+                if error:
+                    raise OSError(abs(error), os.strerror(abs(error)))
+                return replies
+            if kind != family or len(data) < 4:
+                raise RuntimeError("Risposta netlink inattesa")
+            replies.append(data[4:])
+
+
+def suppress_monitor_tx_echo():
+    """Set ACTIVE+SKIP_TX on our down monitor; iw 6.17 lacks SKIP_TX.
+
+    Constants come from Linux's stable nl80211/genetlink UAPI. On stock 7.0,
+    stopping an active monitor misses the tx_mntrs decrement. SKIP_TX prevents
+    that increment, and OWL already requests incoming frames only.
+    """
+    def attribute(kind, value=b""):
+        size = 4 + len(value)
+        return struct.pack("=HH", size, kind) + value + bytes((-size) % 4)
+
+    try:
+        if int((Path("/sys/class/net/ldack0") / "flags").read_text().strip(), 16) & 1:
+            raise RuntimeError("ldack0 deve essere ancora disattivata")
+        index = socket.if_nametoindex("ldack0")
+        with socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 16) as channel:
+            channel.bind((0, 0))
+            replies = _generic_netlink_request(channel, 16, 3, attribute(2, b"nl80211\0"), 1)
+            ids = [struct.unpack("=H", value)[0] for reply in replies
+                   for kind, value in _netlink_attributes(reply) if kind == 1 and len(value) == 2]
+            if len(ids) != 1 or ids[0] < 16:
+                raise RuntimeError("Famiglia nl80211 non disponibile")
+            # SET_INTERFACE=6, IFINDEX=3, MNTR_FLAGS=23; ACTIVE=6, SKIP_TX=7.
+            monitor_flags = attribute(6) + attribute(7)
+            attributes = attribute(3, struct.pack("=I", index)) + attribute(23 | 0x8000, monitor_flags)
+            _generic_netlink_request(channel, ids[0], 6, attributes, 2)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise RuntimeError("Impossibile configurare il monitor Wi-Fi senza eco TX: " + str(exc)) from exc
+
+
 def inspect_interface(iface, require_active=True):
     if not re.fullmatch(r"[a-zA-Z0-9_-]{1,15}", iface):
         raise RuntimeError("Nome interfaccia non valido")
@@ -199,10 +283,12 @@ class DriverTrial:
 
 class Bridge:
     def __init__(self, iface, channel, guardian, active_only=False, fixed_radio=False, fixed_ack=False, go_anchor=False,
-                 max_seconds=DEFAULT_SECONDS):
+                 max_seconds=DEFAULT_SECONDS, native_driver=False, data_rate=None):
         self.iface, self.channel, self.guardian = iface, channel, guardian
         self.max_seconds = max_seconds
         self.active_only = active_only
+        self.native_driver = native_driver
+        self.data_rate = data_rate
         self.fixed_radio = fixed_radio or go_anchor
         self.go_anchor = go_anchor
         self.anchor = None
@@ -215,6 +301,25 @@ class Bridge:
         self.managed = None
         self.was_up = False
         self.awdl_owned = False
+        self.native_cleanup_blocked = False
+
+    def require_parent_up(self):
+        """An up managed vif keeps paired monitors from acquiring a hidden owner."""
+        if not (self.go_anchor and self.native_driver):
+            return
+        try:
+            up = bool(int((Path("/sys/class/net") / self.iface / "flags").read_text().strip(), 16) & 1)
+        except (OSError, ValueError):
+            up = False
+        if up:
+            return
+        message = "La scheda Wi-Fi principale deve restare attiva durante la sessione."
+        if self.created:
+            self.native_cleanup_blocked = True
+            RECOVERY.set()
+            STOP.set()
+            emit("recovery", message=message + " Riavvia il sistema prima di riprovare.")
+        raise RuntimeError(message)
 
     def start(self):
         device, phy = inspect_interface(self.iface)
@@ -252,7 +357,13 @@ class Bridge:
             details = command(["iw", "dev", group, "info"], check=False)
             where = next((l.strip() for l in details.splitlines() if l.strip().startswith("channel")), f"canale {self.channel}")
             emit("log", source="wifi-direct", message=f"Gruppo Wi-Fi Direct {group} pronto: {where}")
+            if self.native_driver:
+                # The managed vif counts even while unassociated. Keep it up
+                # until both monitors are gone, including if the GO process dies.
+                command(["ip", "link", "set", self.iface, "up"])
+                self.require_parent_up()
         if not self.active_only:
+            self.require_parent_up()
             command(["iw", "phy", phy, "interface", "add", "ldmon0", "type", "monitor"])
             self.created.append("ldmon0")
             if group_mac:
@@ -260,11 +371,13 @@ class Bridge:
             command(["ip", "link", "set", "ldmon0", "up"])
             if not self.anchor:
                 command(["iw", "dev", "ldmon0", "set", "freq", str(frequency)])
-        # MT7922: tune plain monitor before adding active monitor (ACKs).
+        # Without a GO, tune the plain monitor before adding the active one.
         command(["iw", "phy", phy, "interface", "add", "ldack0", "type", "monitor", "flags", "active"])
         self.created.append("ldack0")
         if group_mac:
             command(["ip", "link", "set", "ldack0", "address", group_mac])
+        if self.go_anchor and self.native_driver:
+            suppress_monitor_tx_echo()
         command(["ip", "link", "set", "ldack0", "up"])
         if not self.anchor:
             command(["iw", "dev", "ldack0", "set", "freq", str(frequency)])
@@ -279,6 +392,8 @@ class Bridge:
             election.append("-F")
             if self.fixed_ack:
                 election.append("-A")
+        if self.data_rate:
+            election += ["-R", self.data_rate]
         self.owl = subprocess.Popen([str(owl), "-i", "ldack0", "-c", str(self.channel), "-N", "-S", strategy, *election, "-vv"],
                                     env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.awdl_owned = True
@@ -348,6 +463,7 @@ class Bridge:
         # 0 means "until stopped"; the guardian check below still ends the session if the app dies.
         deadline = time.monotonic() + self.max_seconds if self.max_seconds else None
         while not STOP.is_set() and (deadline is None or time.monotonic() < deadline):
+            self.require_parent_up()
             if self.owl.poll() is not None:
                 raise RuntimeError("Il collegamento AWDL si è interrotto.")
             if self.anchor and (not self.anchor.alive() or
@@ -391,17 +507,41 @@ class Bridge:
                 command(["ip", "link", "delete", "awdl0"], check=False)
             except Exception as exc:
                 emit("log", source="cleanup", message=str(exc))
+        if self.native_cleanup_blocked:
+            return
         if RECOVERY.is_set():
             self.cleanup_anchor()
             return
-        for name in reversed(self.created):
+        for name in reversed(self.created.copy()):
+            try:
+                self.require_parent_up()
+            except RuntimeError:
+                # Removing any other vif after losing the guard could exercise
+                # the hidden monitor cleanup path. Recovery requires a reboot.
+                return
             try:
                 command(["iw", "dev", name, "del"])
             except Exception as exc:
                 emit("log", source="cleanup", message=str(exc))
+            remaining = (Path("/sys/class/net") / name).exists()
+            if self.go_anchor and self.native_driver and remaining:
+                self.native_cleanup_blocked = True
+                RECOVERY.set()
+                STOP.set()
+                emit("recovery", message="Rimozione monitor incompleta. Riavvia il sistema per ripristinare la scheda Wi-Fi.")
+                return
+            if not remaining:
+                self.created.remove(name)
             if RECOVERY.is_set():
                 self.cleanup_anchor()
                 return
+        if self.go_anchor and self.native_driver and any(
+                (Path("/sys/class/net") / name).exists() for name in self.created):
+            self.native_cleanup_blocked = True
+            RECOVERY.set()
+            STOP.set()
+            emit("recovery", message="Rimozione monitor incompleta. Riavvia il sistema per ripristinare la scheda Wi-Fi.")
+            return
         if not self.cleanup_anchor():
             return
         for path, previous in self.pm.items():
@@ -421,6 +561,15 @@ class Bridge:
         emit("stopped")
 
 
+DATA_RATE = re.compile(r"(?:6|9|12|18|24|36|48|54|mcs(?:[0-9]|1[0-5])(?:-sgi)?)\Z")
+
+
+def data_rate_arg(value):
+    if not DATA_RATE.fullmatch(value):
+        raise argparse.ArgumentTypeError("rate non valido: " + value)
+    return value
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--iface", required=True)
@@ -430,6 +579,8 @@ def main():
     p.add_argument("--fixed-radio", action="store_true")
     p.add_argument("--fixed-ack", action="store_true")
     p.add_argument("--go-anchor", action="store_true")
+    p.add_argument("--data-rate", type=data_rate_arg, default=None,
+                   help="PHY rate of data frames sent to the phone (OWL -R): 6..54 Mbit/s, mcsN or mcsN-sgi")
     p.add_argument("--max-seconds", type=int, default=DEFAULT_SECONDS,
                    help="session length; 0 keeps it until stopped (at most %d otherwise)" % MAX_SECONDS)
     args = p.parse_args()
@@ -450,6 +601,8 @@ def main():
         signal.signal(sig, lambda *_: STOP.set())
     rc = 0
     try:
+        if not args.driver_trial and (not args.go_anchor or args.channel not in (6, 36, 44)):
+            raise RuntimeError("Con i driver di sistema usa Wi-Fi Direct sui canali 6, 36 o 44.")
         if args.go_anchor:
             if not (BASE / "backend/owl-modern").is_file():
                 raise RuntimeError("Wi-Fi Direct richiede il backend OWL aggiornato.")
@@ -459,7 +612,7 @@ def main():
                     raise RuntimeError(f"{name} è già in uso. Chiudi l’altra sessione AWDL.")
             GoAnchor(args.iface, phy, args.channel, command, emit).preflight()
         iface = trial.start() if trial else args.iface
-        bridge = Bridge(iface, args.channel, args.guardian, active_only=False, fixed_radio=args.fixed_radio, fixed_ack=args.fixed_ack, go_anchor=args.go_anchor, max_seconds=args.max_seconds)
+        bridge = Bridge(iface, args.channel, args.guardian, active_only=False, fixed_radio=args.fixed_radio, fixed_ack=args.fixed_ack, go_anchor=args.go_anchor, max_seconds=args.max_seconds, native_driver=not args.driver_trial, data_rate=args.data_rate)
         bridge.start()
         if not STOP.is_set():
             bridge.supervise()

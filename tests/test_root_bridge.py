@@ -1,6 +1,8 @@
 """Exercise root bridge ownership and rollback, without touching OS or radio."""
 import importlib.util
+import errno
 from pathlib import Path, PurePosixPath
+import struct
 import subprocess
 import unittest
 from unittest.mock import Mock, patch
@@ -49,6 +51,7 @@ class FakeWorld:
             self.managed = args[5]
         elif args[:4] == ("ip", "link", "set", "wlan0"):
             self.up = args[4] == "up"
+            self.files["/sys/class/net/wlan0/flags"] = "0x1" if self.up else "0x0"
         elif args[:4] == ("iw", "phy", "phy0", "interface"):
             self.interfaces.add(args[5])
         elif args[:2] == ("iw", "dev") and args[-1] == "del":
@@ -336,6 +339,27 @@ class BridgeRollbackTests(unittest.TestCase):
         self.assertIn("-F", self.world.spawn_args)
         b.cleanup()
 
+    def test_data_rate_is_passed_to_owl_only_when_requested(self):
+        self.world.files["/bundle/backend/owl-modern"] = "modern binary"
+        b = bridge_module.Bridge("wlan0", 6, 1234, fixed_radio=True, data_rate="36")
+        b.start()
+        self.assertEqual(self.world.spawn_args[self.world.spawn_args.index("-R") + 1], "36")
+        b.cleanup()
+
+    def test_default_leaves_owl_rate_alone(self):
+        self.world.files["/bundle/backend/owl-modern"] = "modern binary"
+        b = bridge_module.Bridge("wlan0", 6, 1234, fixed_radio=True)
+        b.start()
+        self.assertNotIn("-R", self.world.spawn_args)
+        b.cleanup()
+
+    def test_data_rate_syntax_is_validated(self):
+        for ok in ("6", "54", "mcs7", "mcs15-sgi"):
+            self.assertEqual(bridge_module.data_rate_arg(ok), ok)
+        for bad in ("7", "mcs16", "36; rm", "", "-A"):
+            with self.assertRaises(Exception):
+                bridge_module.data_rate_arg(bad)
+
     def go_bridge(self):
         self.world.files["/bundle/backend/owl-modern"] = "modern binary"
         return bridge_module.Bridge("wlan0", 6, 1234, go_anchor=True)
@@ -349,9 +373,10 @@ class BridgeRollbackTests(unittest.TestCase):
         self.assertEqual(self.mutations(), [])
         self.assertEqual(self.world.writes, [])
 
-    def test_go_uses_group_mac_on_both_monitors_and_group_channel(self):
+    def test_go_uses_group_mac_on_paired_monitors_and_group_channel(self):
         b = self.go_bridge()
         b.start()
+        self.assertEqual(b.created, ["ldmon0", "ldack0"])
         for name in ("ldmon0", "ldack0"):
             alias = ("ip", "link", "set", name, "address", "02:11:22:33:44:55")
             up = ("ip", "link", "set", name, "up")
@@ -378,13 +403,160 @@ class BridgeRollbackTests(unittest.TestCase):
 
     def test_go_monitor_alias_failure_removes_group_and_created_monitor(self):
         b = self.go_bridge()
-        self.world.fail_command = ("ip", "link", "set", "ldmon0", "address", "02:11:22:33:44:55")
+        self.world.fail_command = ("ip", "link", "set", "ldack0", "address", "02:11:22:33:44:55")
         with self.assertRaises(RuntimeError):
             b.start()
         b.cleanup()
         self.assertTrue(self.anchor.stopped)
         self.assertEqual(self.world.interfaces, {"wlan0"})
         self.restored()
+
+    def test_native_go_disables_tx_echo_before_first_monitor_up(self):
+        self.world.files["/bundle/backend/owl-modern"] = "modern binary"
+        b = bridge_module.Bridge("wlan0", 6, 1234, go_anchor=True, native_driver=True)
+        with patch.object(bridge_module, "suppress_monitor_tx_echo",
+                          side_effect=lambda: self.world.commands.append(("monitor", "skip-tx"))) as configure:
+            b.start()
+        configure.assert_called_once_with()
+        cmds = self.world.commands
+        self.assertLess(cmds.index(("anchor", "start")), cmds.index(("monitor", "skip-tx")))
+        self.assertLess(cmds.index(("ip", "link", "set", "ldack0", "address", "02:11:22:33:44:55")),
+                        cmds.index(("monitor", "skip-tx")))
+        self.assertLess(cmds.index(("monitor", "skip-tx")), cmds.index(("ip", "link", "set", "ldack0", "up")))
+        parent_up = cmds.index(("ip", "link", "set", "wlan0", "up"))
+        passive_add = cmds.index(("iw", "phy", "phy0", "interface", "add", "ldmon0", "type", "monitor"))
+        self.assertLess(parent_up, passive_add)
+        b.cleanup()
+        cleanup = self.world.commands
+        restore = cleanup.index(("nmcli", "device", "set", "wlan0", "managed", "yes"))
+        for name in ("ldmon0", "ldack0"):
+            self.assertLess(cleanup.index(("iw", "dev", name, "del")), restore)
+        self.restored()
+
+    def test_native_monitor_configuration_failure_rolls_back_without_bringing_it_up(self):
+        self.world.files["/bundle/backend/owl-modern"] = "modern binary"
+        b = bridge_module.Bridge("wlan0", 6, 1234, go_anchor=True, native_driver=True)
+        with patch.object(bridge_module, "suppress_monitor_tx_echo", side_effect=RuntimeError("unsupported flags")):
+            with self.assertRaisesRegex(RuntimeError, "unsupported"):
+                b.start()
+        b.cleanup()
+        self.assertNotIn(("ip", "link", "set", "ldack0", "up"), self.world.commands)
+        self.assertLess(self.world.commands.index(("iw", "dev", "ldack0", "del")),
+                        self.world.commands.index(("anchor", "cleanup")))
+        self.assertEqual(self.world.interfaces, {"wlan0"})
+        self.restored()
+
+    def test_patched_go_keeps_original_monitor_flags(self):
+        b = self.go_bridge()
+        with patch.object(bridge_module, "suppress_monitor_tx_echo") as configure:
+            b.start()
+        configure.assert_not_called()
+        b.cleanup()
+
+    def native_go_bridge(self):
+        self.world.files["/bundle/backend/owl-modern"] = "modern binary"
+        return bridge_module.Bridge("wlan0", 6, 1234, go_anchor=True, native_driver=True)
+
+    def start_native_go(self):
+        b = self.native_go_bridge()
+        with patch.object(bridge_module, "suppress_monitor_tx_echo"):
+            b.start()
+        return b
+
+    def test_native_parent_guard_failure_precedes_monitor_creation_and_rolls_back(self):
+        b = self.native_go_bridge()
+        original = self.world.command
+        failed_once = False
+
+        def parent_did_not_come_up(args, check=True):
+            nonlocal failed_once
+            if tuple(args) == ("ip", "link", "set", "wlan0", "up") and not failed_once:
+                failed_once = True
+                self.world.commands.append(tuple(args))
+                return ""
+            return original(args, check=check)
+
+        with patch.object(bridge_module, "command", parent_did_not_come_up):
+            with self.assertRaisesRegex(RuntimeError, "principale deve restare attiva"):
+                b.start()
+            b.cleanup()
+        self.assertEqual(b.created, [])
+        self.assertFalse(bridge_module.RECOVERY.is_set())
+        self.assertFalse(any("interface" in cmd and "add" in cmd for cmd in self.world.commands))
+        self.assertTrue(self.anchor.stopped)
+        self.restored()
+
+    def test_native_go_crash_keeps_parent_guard_until_both_monitors_are_removed(self):
+        self.world.up = False
+        self.world.files["/sys/class/net/wlan0/flags"] = "0x0"
+        b = self.start_native_go()
+        self.assertTrue(self.world.up)
+        self.anchor.stopped = True
+        with self.assertRaisesRegex(RuntimeError, "Wi-Fi Direct si è interrotto"):
+            b.supervise()
+        b.cleanup()
+        self.assertFalse(bridge_module.RECOVERY.is_set())
+        cmds = self.world.commands
+        final_down = max(i for i, cmd in enumerate(cmds) if cmd == ("ip", "link", "set", "wlan0", "down"))
+        for name in ("ldmon0", "ldack0"):
+            self.assertLess(cmds.index(("iw", "dev", name, "del")), final_down)
+        self.assertEqual(self.world.interfaces, {"wlan0"})
+        self.restored(up=False)
+        # A repeated cleanup must not mistake the restored down parent for a
+        # lost guard after all monitor interfaces have already been removed.
+        b.cleanup()
+        self.assertFalse(bridge_module.RECOVERY.is_set())
+
+    def test_native_lost_parent_guard_blocks_monitor_and_anchor_cleanup(self):
+        b = self.start_native_go()
+        self.world.up = False
+        self.world.files["/sys/class/net/wlan0/flags"] = "0x0"
+        with self.assertRaisesRegex(RuntimeError, "principale deve restare attiva"):
+            b.supervise()
+        b.cleanup()
+        self.assertTrue(bridge_module.RECOVERY.is_set())
+        self.assertFalse(any(cmd[-1:] == ("del",) for cmd in self.world.commands))
+        self.assertNotIn(("anchor", "cleanup"), self.world.commands)
+        self.assertEqual(self.world.managed, "no")
+        self.assertTrue({"ldmon0", "ldack0"}.issubset(self.world.interfaces))
+
+    def test_native_cleanup_checks_parent_guard_before_deleting_either_monitor(self):
+        b = self.start_native_go()
+        self.world.files["/sys/class/net/wlan0/flags"] = "0x0"
+        b.cleanup()
+        self.assertTrue(bridge_module.RECOVERY.is_set())
+        self.assertFalse(any(cmd[-1:] == ("del",) for cmd in self.world.commands))
+        self.assertNotIn(("anchor", "cleanup"), self.world.commands)
+        self.assertEqual(self.world.managed, "no")
+
+    def test_native_failed_monitor_removal_preserves_parent_and_blocks_network_restore(self):
+        b = self.start_native_go()
+        self.world.fail_command = ("iw", "dev", "ldack0", "del")
+        b.cleanup()
+        self.assertTrue(bridge_module.RECOVERY.is_set())
+        self.assertTrue(self.world.up)
+        self.assertEqual(self.world.managed, "no")
+        self.assertNotIn(("anchor", "cleanup"), self.world.commands)
+        self.assertTrue({"ldmon0", "ldack0"}.issubset(self.world.interfaces))
+
+    def test_native_successful_delete_that_leaves_monitor_blocks_anchor_and_network_restore(self):
+        b = self.start_native_go()
+        original = self.world.command
+
+        def successful_no_op(args, check=True):
+            if tuple(args) == ("iw", "dev", "ldack0", "del"):
+                self.world.commands.append(tuple(args))
+                return ""
+            return original(args, check=check)
+
+        with patch.object(bridge_module, "command", successful_no_op):
+            b.cleanup()
+        self.assertTrue(bridge_module.RECOVERY.is_set())
+        self.assertTrue(self.world.up)
+        self.assertEqual(self.world.managed, "no")
+        self.assertNotIn(("anchor", "cleanup"), self.world.commands)
+        self.assertIn("ldack0", b.created)
+        self.assertTrue({"ldmon0", "ldack0"}.issubset(self.world.interfaces))
 
     def test_go_unstopped_owner_prevents_network_and_driver_reload(self):
         b = self.go_bridge()
@@ -458,6 +630,156 @@ class BridgeRollbackTests(unittest.TestCase):
         self.assertEqual(self.world.managed, "yes")
         self.assertTrue(self.world.up)
         self.assertEqual(self.world.files["/sys/kernel/debug/ieee80211/phy0/mt76/deep-sleep"], "1\n")
+
+
+class NativeDriverModeTests(unittest.TestCase):
+    def setUp(self):
+        bridge_module.STOP.clear()
+        bridge_module.RECOVERY.clear()
+
+    def run_main(self, args):
+        with patch.object(bridge_module.os, "geteuid", return_value=0), \
+                patch("builtins.open", return_value=Mock()), \
+                patch.object(bridge_module.fcntl, "flock"), \
+                patch.object(bridge_module.signal, "signal"), \
+                patch.object(bridge_module.sys, "argv", ["root_bridge.py", "--iface", "wlan0", "--guardian", "1234", *args]):
+            return bridge_module.main()
+
+    def test_native_monitor_only_and_wrong_channel_refused_before_network_change(self):
+        for args in ([],):
+            with self.subTest(args=args), patch.object(bridge_module, "command") as command, \
+                    patch.object(bridge_module, "Bridge") as bridge, patch.object(bridge_module, "emit") as emit:
+                self.assertEqual(self.run_main(args), 1)
+                command.assert_not_called()
+                bridge.assert_not_called()
+                emit.assert_any_call("error", message="Con i driver di sistema usa Wi-Fi Direct sui canali 6, 36 o 44.")
+
+    def test_patched_driver_can_still_use_monitor_only(self):
+        with patch.object(bridge_module, "DriverTrial") as trial, patch.object(bridge_module, "Bridge") as bridge:
+            trial.return_value.start.return_value = "wlan0"
+            self.assertEqual(self.run_main(["--driver-trial"]), 0)
+            self.assertFalse(bridge.call_args.kwargs["go_anchor"])
+            self.assertFalse(bridge.call_args.kwargs["native_driver"])
+            bridge.return_value.start.assert_called_once()
+            trial.return_value.cleanup.assert_called_once()
+
+
+class FakeNetlink:
+    port = 2468
+    family = 42
+
+    def __init__(self, error=0):
+        self.error = error
+        self.sent, self.replies, self.timeouts = [], [], []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def bind(self, address):
+        self.bound = address
+
+    def getsockname(self):
+        return self.port, 0
+
+    def settimeout(self, timeout):
+        self.timeouts.append(timeout)
+
+    def message(self, kind, sequence, payload):
+        return struct.pack("=IHHII", 16 + len(payload), kind, 0, sequence, self.port) + payload
+
+    def ack(self, request, error=0):
+        seq = struct.unpack_from("=I", request, 8)[0]
+        return self.message(2, seq, struct.pack("=i", error) + request[:16])
+
+    def sendto(self, request, target):
+        self.sent.append(request)
+        self.target = target
+        if len(self.sent) == 1:
+            # CTRL_CMD_NEWFAMILY plus CTRL_ATTR_FAMILY_ID.
+            data = struct.pack("=BBHHHH", 1, 1, 0, 6, 1, self.family) + b"\0\0"
+            self.replies.append(self.message(16, 1, data))
+        self.replies.append(self.ack(request, self.error if len(self.sent) == 2 else 0))
+
+    def recvmsg(self, _):
+        return self.replies.pop(0), [], 0, (0, 0)
+
+
+class NativeMonitorNetlinkTests(unittest.TestCase):
+    def configure(self, channel, up=False):
+        knob = Mock()
+        knob.__truediv__ = Mock(return_value=knob)
+        knob.read_text.return_value = "0x1" if up else "0x0"
+        with patch.object(bridge_module, "Path", return_value=knob), \
+                patch.object(bridge_module.socket, "socket", return_value=channel), \
+                patch.object(bridge_module.socket, "if_nametoindex", return_value=17) as index:
+            bridge_module.suppress_monitor_tx_echo()
+        index.assert_called_once_with("ldack0")
+
+    def test_active_and_skip_tx_are_sent_together_for_the_owned_monitor(self):
+        channel = FakeNetlink()
+        self.configure(channel)
+        self.assertEqual(len(channel.sent), 2)
+        request = channel.sent[1]
+        self.assertEqual(struct.unpack_from("=H", request, 4)[0], channel.family)
+        self.assertEqual(struct.unpack_from("=B", request, 16)[0], 6)
+        attrs = dict(bridge_module._netlink_attributes(request[20:]))
+        self.assertEqual(struct.unpack("=I", attrs[3])[0], 17)
+        self.assertEqual(dict(bridge_module._netlink_attributes(attrs[23])), {6: b"", 7: b""})
+        self.assertTrue(all(0 < value <= 3 for value in channel.timeouts))
+        self.assertEqual(channel.target, (0, 0))
+
+    def test_kernel_rejection_is_reported_without_a_fallback(self):
+        channel = FakeNetlink(error=-errno.EOPNOTSUPP)
+        with self.assertRaisesRegex(RuntimeError, "senza eco TX"):
+            self.configure(channel)
+        self.assertEqual(len(channel.sent), 2)
+
+    def test_up_monitor_is_refused_before_netlink_mutation(self):
+        channel = FakeNetlink()
+        with self.assertRaisesRegex(RuntimeError, "ancora disattivata"):
+            self.configure(channel, up=True)
+        self.assertEqual(channel.sent, [])
+
+    def test_missing_ack_times_out(self):
+        channel = FakeNetlink()
+        channel.recvmsg = Mock(side_effect=TimeoutError("timeout"))
+        with self.assertRaisesRegex(RuntimeError, "senza eco TX"):
+            self.configure(channel)
+
+    def test_ack_for_another_sequence_cannot_complete_the_request(self):
+        channel = FakeNetlink()
+        channel.sendto = Mock()
+        request = struct.pack("=IHHII", 20, 42, 5, 2, channel.port) + bytes(4)
+        wrong = bytearray(channel.ack(request))
+        struct.pack_into("=I", wrong, 8, 99)
+        channel.replies = [bytes(wrong), channel.ack(request)]
+        self.assertEqual(bridge_module._generic_netlink_request(channel, 42, 6, b"", 2), [])
+        self.assertEqual(channel.replies, [])
+
+    def test_ack_original_header_must_match_request(self):
+        channel = FakeNetlink()
+        channel.sendto = Mock()
+        request = struct.pack("=IHHII", 20, 42, 5, 2, channel.port) + bytes(4)
+        wrong = bytearray(channel.ack(request))
+        struct.pack_into("=H", wrong, 24, 41)
+        channel.replies = [bytes(wrong)]
+        with self.assertRaisesRegex(RuntimeError, "altro comando"):
+            bridge_module._generic_netlink_request(channel, 42, 6, b"", 2)
+
+    def test_truncated_messages_and_attributes_are_rejected(self):
+        for packet in (b"short", struct.pack("=IHHII", 99, 42, 0, 2, 2468)):
+            with self.subTest(packet=packet):
+                channel = FakeNetlink()
+                channel.sendto = Mock()
+                channel.replies = [packet]
+                with self.assertRaisesRegex(RuntimeError, "netlink"):
+                    bridge_module._generic_netlink_request(channel, 42, 6, b"", 2)
+        for payload in (b"bad", struct.pack("=HH", 99, 1)):
+            with self.assertRaisesRegex(RuntimeError, "netlink"):
+                list(bridge_module._netlink_attributes(payload))
 
 
 class CommandTimeoutTests(unittest.TestCase):

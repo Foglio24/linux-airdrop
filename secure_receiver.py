@@ -40,7 +40,7 @@ TRANSFER_LIMIT = 2 * 1024 * 1024 * 1024
 FILE_LIMIT = 512
 IO_BLOCK = 64 * 1024
 APPROVAL_SECONDS = 180
-READ_TIMEOUT = 30
+READ_TIMEOUT = 120   # the phone's TCP backs off for many seconds when it leaves our channel; 30 s aborted receives
 TRANSFER_SECONDS = 3600
 CONFIRM_SECONDS = 120
 EVENT_FILES = 40      # file entries per event line (the window shows a summary; the folder holds the rest)
@@ -174,8 +174,48 @@ def _exact(stream, length):
     return bytes(out)
 
 
+class _Tail:
+    """Pass-through reader that remembers how much was read and the last bytes, for the stall report."""
+    KEEP = 96
+
+    def __init__(self, stream):
+        self.stream, self.count, self.tail = stream, 0, b""
+
+    def _seen(self, data):
+        self.count += len(data)
+        self.tail = (self.tail + data)[-self.KEEP:]
+        return data
+
+    def read(self, size=-1):
+        return self._seen(self.stream.read(size))
+
+    def readline(self, size=-1):
+        return self._seen(self.stream.readline(size))
+
+
 def _body_parts(handler, limit):
-    """Read strict HTTP framing in small pieces, including the final chunk."""
+    """Read strict HTTP framing in small pieces, including the final chunk.
+
+    When the body ends early (timeout, closed connection, bad framing) the log
+    says where in the framing the reader was and which bytes came last: a
+    receive that stops at 99% then shows whether the sender or the reader is
+    wrong about the end of the body."""
+    stream = _Tail(handler.rfile)
+    state = {"chunks": [], "remain": None}
+    try:
+        yield from _framed_parts(handler, stream, limit, state)
+    except GeneratorExit:
+        raise
+    except BaseException as exc:
+        sizes = state["chunks"]
+        LOG.warning("Corpo HTTP interrotto (%s: %s) dopo %d byte letti; %d blocchi, primi %s, ultimi %s; "
+                    "mancano %s byte del blocco corrente; ultimi byte: %s",
+                    type(exc).__name__, exc, stream.count, len(sizes), sizes[:3], sizes[-4:],
+                    state["remain"], stream.tail.hex())
+        raise
+
+
+def _framed_parts(handler, stream, limit, state):
     headers = handler.headers
     encoding = headers.get("Transfer-Encoding", "").strip().lower()
     lengths = headers.get_all("Content-Length", []) if hasattr(headers, "get_all") else []
@@ -189,18 +229,19 @@ def _body_parts(handler, limit):
         while True:
             if time.monotonic() > deadline:
                 raise ReceiveError("Tempo massimo del trasferimento superato", 408)
-            raw = _line(handler.rfile)
+            raw = _line(stream)
             # Chunk extensions are legal, but never determine allocations.
             token = raw.split(b";", 1)[0]
             if not re.fullmatch(rb"[0-9A-Fa-f]{1,16}", token):
                 raise ReceiveError("Dimensione del blocco HTTP non valida")
             length = int(token, 16)
+            state["chunks"].append(length)
             if total + length > limit:
                 raise ReceiveError("Trasferimento troppo grande", 413)
             if length == 0:
                 trailer_bytes = 0
                 while True:
-                    line = _line(handler.rfile, 8192)
+                    line = _line(stream, 8192)
                     trailer_bytes += len(line)
                     if trailer_bytes > 16384:
                         raise ReceiveError("Trailer HTTP troppo grande", 413)
@@ -208,15 +249,15 @@ def _body_parts(handler, limit):
                         return
                     if b":" not in line:
                         raise ReceiveError("Trailer HTTP non valido")
-            remain = length
+            remain = state["remain"] = length
             while remain:
                 if time.monotonic() > deadline:
                     raise ReceiveError("Tempo massimo del trasferimento superato", 408)
-                part = _exact(handler.rfile, min(IO_BLOCK, remain))
-                remain -= len(part)
+                part = _exact(stream, min(IO_BLOCK, remain))
+                remain = state["remain"] = remain - len(part)
                 total += len(part)
                 yield part
-            if _exact(handler.rfile, 2) != b"\r\n":
+            if _exact(stream, 2) != b"\r\n":
                 raise ReceiveError("Separatore HTTP non valido")
     else:
         raw = headers.get("Content-Length")
@@ -228,7 +269,8 @@ def _body_parts(handler, limit):
         while total < length:
             if time.monotonic() > deadline:
                 raise ReceiveError("Tempo massimo del trasferimento superato", 408)
-            part = _exact(handler.rfile, min(IO_BLOCK, length - total))
+            state["remain"] = length - total
+            part = _exact(stream, min(IO_BLOCK, length - total))
             total += len(part)
             yield part
 
@@ -569,6 +611,24 @@ def _handle_upload(handler):
         _forget_cancel(transfer)
 
 
+def _keep_acknowledging(sock):
+    """Repeat our cumulative ACK once a second whenever the sender goes quiet during an upload.
+
+    Once an iPhone has written the whole body it drops back to visiting our channel one slot in sixteen. An ACK
+    of ours lost then is never sent again (TCP does not retransmit pure ACKs), so the phone keeps its window
+    closed, its progress bar says "completed", and we wait at 97-99 % until a timeout (18 October 2026, see
+    docs/SENDING.md). A keepalive probe carries the current ACK number: every probe is another chance for it
+    to land in one of the phone's slots. Probes are only sent while nothing arrives, so a flowing transfer is
+    untouched, and a peer that never answers is dropped after READ_TIMEOUT probes, as the read timeout would."""
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 1)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 1)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, READ_TIMEOUT)
+    except OSError as exc:
+        LOG.warning("Keepalive TCP non impostabile: %s", exc)
+
+
 def _receive_upload(handler, request, transfer):
     content_type = handler.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
     if content_type not in ("application/x-cpio", "application/x-dvzip"):
@@ -581,7 +641,11 @@ def _receive_upload(handler, request, transfer):
     files_dir.mkdir(mode=0o700)
     try:
         progress = Progress(transfer, _expected_bytes(handler.headers))
+        LOG.info("Upload: Transfer-Encoding=%s Content-Length=%s TotalBytes=%s Expect=%s Content-Type=%s",
+                 *(handler.headers.get(name) for name in
+                   ("Transfer-Encoding", "Content-Length", "TotalBytes", "Expect", "Content-Type")))
         events.emit("receive_start", id=transfer, total=progress.total)
+        _keep_acknowledging(handler.connection)
         with open(raw_path, "xb") as raw:
             if handler.headers.get("Expect", "").strip().lower() == "100-continue":
                 _response(handler, 100)
@@ -747,8 +811,12 @@ def _install_sender_hooks():
             _send_state["last"] = now
             events.emit("send_progress", done=done, total=total)
 
+    def waiting():
+        events.emit("send_waiting_confirmation")
+
     AirDropClient.start_hook = staticmethod(started)
     AirDropClient.progress_hook = staticmethod(moved)
+    AirDropClient.waiting_hook = staticmethod(waiting)
     original_ask, original_upload = AirDropClient.send_ask, AirDropClient.send_upload
 
     @functools.wraps(original_ask)

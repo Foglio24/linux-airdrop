@@ -36,7 +36,7 @@ ENTRY = "airdrop-bridge"
 MANIFEST = "helper-manifest.json"
 # Everything root_bridge.py reads or executes. Nothing else is installed.
 FILES = (
-    "root_bridge.py", "p2p_anchor.py", "awdl_diag.py",
+    "root_bridge.py", "p2p_anchor.py", "awdl_diag.py", "radio_compat.py",
     "backend/owl-modern", "backend/owl",
     "backend/driver-compat/manifest.json", "backend/driver-compat/mac80211.ko",
     "backend/driver-compat/mt792x-lib.ko", "backend/driver-compat/mt7921e.ko",

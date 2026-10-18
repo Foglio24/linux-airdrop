@@ -62,6 +62,10 @@ class FakeWorld:
         self.nm_state = ""
         self.fail_nm_show = False
         self.now = 0
+        self.frequencies = ("\tFrequencies:\n"
+                            "\t\t* 2437 MHz [6] (20.0 dBm)\n"
+                            "\t\t* 5180 MHz [36] (23.0 dBm)\n"
+                            "\t\t* 5220 MHz [44] (23.0 dBm)\n")
 
     def monotonic(self):
         self.now += 0.1
@@ -81,7 +85,8 @@ class FakeWorld:
         if args == ("iw", "dev"):
             return self.inventory()
         if args == ("iw", "phy", "phy0", "info"):
-            return "Supported interface modes:\n\t* managed\n" + ("" if self.no_capability else "\t* P2P-GO\n")
+            return ("Supported interface modes:\n\t* managed\n" +
+                    ("" if self.no_capability else "\t* P2P-GO\n") + self.frequencies)
         if args[0].endswith("wpa_cli"):
             if args[-1] == "ping":
                 return "PONG"
@@ -170,6 +175,82 @@ class GoAnchorTests(unittest.TestCase):
         self.assertTrue(process.terminated)
         self.assertIn("p2p-wlan0-foreign", self.world.devices)
         self.assertFalse(any("foreign-go" in args and args[-1] == "del" for args in self.world.commands))
+
+    def make_anchor(self, channel):
+        return anchor_module.GoAnchor("wlan0", "phy0", channel, self.world.command,
+                                      lambda event, **data: self.world.events.append((event, data)))
+
+    def test_allowed_5ghz_channels_use_the_requested_frequency_and_keep_ownership_checks(self):
+        for channel, frequency in ((36, 5180), (44, 5220)):
+            with self.subTest(channel=channel):
+                anchor = self.make_anchor(channel)
+                self.world.status = f"mode=P2P GO\naddress=02:00:00:00:00:03\nfreq={frequency}"
+                self.assertEqual(anchor.start(), ("radio-go", "02:00:00:00:00:03"))
+                self.assertTrue(anchor.alive())
+                self.assertTrue(any("p2p_group_add" in args and f"freq={frequency}" in args for args in self.world.commands))
+                self.assertTrue(any(event == "status" and f"canale {channel}" in data["message"]
+                                    for event, data in self.world.events))
+                self.assertTrue(anchor.cleanup())
+                self.assertIn("p2p-wlan0-foreign", self.world.devices)
+
+    def test_5ghz_status_on_wrong_frequency_is_rejected_and_daemon_stopped(self):
+        anchor = self.make_anchor(36)
+        self.world.status = "mode=P2P GO\naddress=02:00:00:00:00:03\nfreq=5220"
+        with self.assertRaisesRegex(RuntimeError, "canale diverso"):
+            anchor.start()
+        self.assertTrue(self.world.process.terminated)
+        self.assertIsNone(anchor.runtime)
+
+    def test_disabled_no_ir_and_radar_channels_are_refused_before_mutation(self):
+        for restriction in ("disabled", "no IR", "NO-IR", "NO_IR", "radar detection", "DFS", "passive scan", "no IBSS"):
+            with self.subTest(restriction=restriction):
+                self.world.frequencies = f"\tFrequencies:\n\t\t* 5220 MHz [44] (23.0 dBm) ({restriction})\n"
+                anchor = self.make_anchor(44)
+                with self.assertRaisesRegex(RuntimeError, "restrizioni"):
+                    anchor.start()
+                self.assertEqual(self.mutations(), [])
+                self.assertEqual(self.world.spawns, [])
+                self.assertIsNone(anchor.runtime)
+
+    def test_dfs_continuation_rejects_the_channel_even_when_dfs_is_available(self):
+        self.world.frequencies = ("\tFrequencies:\n\t\t* 5220 MHz [44] (23.0 dBm)\n"
+                                  "\t\t\tDFS state: available (for 100 sec)\n"
+                                  "\t\t\tDFS CAC time: 60000 ms\n")
+        with self.assertRaisesRegex(RuntimeError, "restrizioni"):
+            self.make_anchor(44).start()
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual(self.world.spawns, [])
+
+    def test_missing_or_mislabeled_frequency_is_refused_before_mutation(self):
+        for frequencies in ("", "\t* 2437 MHz [6] (20.0 dBm)\n", "\t* 5180 MHz [44] (23.0 dBm)\n"):
+            with self.subTest(frequencies=frequencies):
+                self.world.frequencies = frequencies
+                with self.assertRaises(RuntimeError):
+                    self.make_anchor(36).start()
+                self.assertEqual(self.mutations(), [])
+                self.assertEqual(self.world.spawns, [])
+
+    def test_unrelated_dfs_frequency_does_not_restrict_the_selected_channel(self):
+        self.world.frequencies = ("\tFrequencies:\n\t\t* 5220 MHz [44] (23.0 dBm)\n"
+                                  "\t\t* 5260 MHz [52] (23.0 dBm) (radar detection)\n"
+                                  "\t\t\tDFS state: usable\n")
+        self.assertEqual(self.make_anchor(44).preflight()[0]["name"], "wlan0")
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual(self.world.spawns, [])
+
+    def test_later_section_does_not_become_part_of_the_frequency_record(self):
+        self.world.frequencies = ("\tFrequencies:\n\t\t* 5220 MHz [44] (23.0 dBm)\n"
+                                  "\tSupported commands:\n\t\t* radar detection\n")
+        self.make_anchor(44).preflight()
+        self.assertEqual(self.mutations(), [])
+
+    def test_conflicting_duplicate_frequency_records_fail_closed(self):
+        self.world.frequencies = ("\tFrequencies:\n\t\t* 5220 MHz [44] (23.0 dBm)\n"
+                                  "\t\t* 5220 MHz [44] (disabled)\n")
+        with self.assertRaisesRegex(RuntimeError, "restrizioni"):
+            self.make_anchor(44).start()
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual(self.world.spawns, [])
 
     def test_preexisting_group_on_selected_phy_aborts_before_mutation(self):
         self.world.devices["existing"] = {"phy": "phy0", "name": "already-go", "type": "P2P-GO", "mac": "02:00:00:00:00:09", "wdev": "0x9"}
@@ -371,10 +452,24 @@ class GoAnchorTests(unittest.TestCase):
         self.assertTrue(self.world.process.terminated)
 
     def test_invalid_channel_and_interface_rejected(self):
-        for iface, phy, channel in (("bad/name", "phy0", 6), ("wlan0", "other", 6), ("wlan0", "phy0", 44)):
+        for iface, phy, channel in (("bad/name", "phy0", 6), ("wlan0", "other", 6), ("wlan0", "phy0", 149)):
             with self.subTest(iface=iface, phy=phy, channel=channel):
                 with self.assertRaises(RuntimeError):
                     anchor_module.GoAnchor(iface, phy, channel, self.world.command, lambda *a, **kw: None)
+
+
+class RealIwFormatTests(unittest.TestCase):
+    """iw prints frequencies with a decimal part: "5220.0 MHz [44]"."""
+
+    def test_decimal_frequencies_are_recognised(self):
+        info = "\t\tFrequencies:\n\t\t\t* 2437.0 MHz [6] (20.0 dBm)\n\t\t\t* 5180.0 MHz [36] (23.0 dBm)\n\t\t\t* 5220.0 MHz [44] (23.0 dBm)\n"
+        for channel, frequency in ((6, 2437), (36, 5180), (44, 5220)):
+            self.assertEqual(anchor_module.permitted_frequency(info, channel), frequency)
+
+    def test_decimal_frequency_with_no_ir_is_refused(self):
+        info = "\t\t\t* 5180.0 MHz [36] (23.0 dBm)\n\t\t\t* 5220.0 MHz [44] (23.0 dBm)\n\t\t\t\t(no IR)\n"
+        with self.assertRaises(RuntimeError):
+            anchor_module.permitted_frequency(info, 44)
 
 
 if __name__ == "__main__":

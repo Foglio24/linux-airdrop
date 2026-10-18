@@ -70,3 +70,36 @@ would be sent 15 times: slower, but still delivered), whether the retries hold u
 whether receiving stays as fast. In the one earlier session with `-A` (15 October, before the Wi-Fi Direct anchor)
 TLS handshakes to the phone completed, which means acknowledged frames did reach it. The next real test answers the
 rest: the TCP line in the log gives the retransmitted share, and OWL's STATS lines the frames sent.
+
+## Receiving from the iPhone stopped at 97–99 % (18 October 2026)
+
+Native driver, Wi-Fi Direct anchor, the same 5.56 MB photo sent from the iPhone five times. The phone showed
+"completed" early while the PC stopped at 97–99 % and failed after its read timeout.
+
+Measured with a TCP capture on `awdl0` and radiotap captures on `ldmon0`/`ldack0`:
+
+* The bulk arrived; only the tail did not. The phone's TCP stopped with data in flight, sent one tail-loss probe that
+  the PC answered (D-SACK), then went silent: our ACKs were not getting through to its TCP, so its send window never
+  reopened. Its progress bar counts bytes written to its socket, which is why it showed "completed".
+* Not the cause: the 12-bit 802.11 sequence wrap (crossed mid-transfer without effect), the channel (6 and 44 alike),
+  the PC's receive window (always open), the reader (it waited for bytes still in the phone's send buffer).
+
+| Session | Radio ACKs (`-A`) | Data rate (`-R`) | Result |
+|---|---|---|---|
+| ch 44 | on | 36 Mbit/s | failed at the tail |
+| ch 6 (2 receives) | on | 36 Mbit/s | failed at the tail |
+| ch 6 (2 receives) | off | 12 Mbit/s | failed at the tail |
+| ch 6 | on | 12 Mbit/s (default) | **complete**, 5 560 169 B in about 2 min |
+| ch 44, iPad, 2.85 MB | on | 12 Mbit/s (default) | bulk 3-4x faster than ch 6, then failed at 91 % |
+| ch 44, iPad, same file, with keepalive | on | 12 Mbit/s (default) | **complete** in about 12 s |
+
+Keep radio acknowledgements on and leave the data rate at OWL's default: a final ACK lost to a phone that listens on
+our channel one slot in sixteen is never replaced. `--data-rate` stays opt-in for experiments only. One success is
+suggestive, not proof; repeat before drawing conclusions. The receiver now logs the upload headers and, when a body
+ends early, where in the chunked framing it stopped and the last bytes read.
+
+The channel 44 receive shows the default settings are not enough: the tail can still be lost. Our last ACKs are
+sent once, and TCP never retransmits a pure ACK, so one lost while the phone visits our channel one slot in sixteen
+stalls the transfer for good. The receiver therefore enables TCP keepalive (1 s idle, 1 s interval) on the upload
+socket: whenever the phone goes quiet, every second a probe repeats our current ACK number. First check: the iPad
+file that had stopped at 91 % arrived whole (one transfer; more are needed before calling it solved).

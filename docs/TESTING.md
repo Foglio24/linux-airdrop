@@ -1,4 +1,15 @@
-# What was tested in 1.1, and what that does and does not prove
+# What was tested, and what that does and does not prove
+
+## 1.2
+
+New automated tests cover the capability-based radio plan (`test_radio_compat.py`), the nl80211 monitor flags and cleanup
+ordering (`test_root_bridge.py`), the regulatory check of the Wi-Fi Direct channel including `iw`'s decimal frequencies
+(`test_p2p_anchor.py`), the sender's upload-only TCP counters and confirmation state (`test_send_transport.py`) and the
+receiver's keepalive probes on a real TCP connection (`test_receiver_security.py`). Real-device results are in
+[`ANDUINOS.md`](ANDUINOS.md) and [`SENDING.md`](SENDING.md): receiving tried with an iPhone and an iPad, sending only with
+small files.
+
+## 1.1
 
 Run everything with `tests/run-all.sh` (one process per file; 27 files). The GUI, tray and single-instance tests need a desktop
 session; the loopback and interface tests need `unshare -Urn`; none of them needs root, a Wi-Fi card or a phone.

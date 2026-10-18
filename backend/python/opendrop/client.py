@@ -233,12 +233,17 @@ class AirDropClient:
             )
         else:
             self.http_conn.request("POST", url, body=body, headers=_headers)
+        if url == "/Upload" and self.waiting_hook is not None:
+            # A successful send only means TLS/the kernel accepted the body.
+            # Keep this separate from the receiver's eventual HTTP response.
+            self.waiting_hook()
         sock = self.http_conn.sock
         http_resp = self.http_conn.getresponse()
         if url == "/Upload" and getattr(self, "_upload_started", None):
             # The receiver has answered, so every byte is acknowledged; the response still holds the
             # socket open here, whereas after read() a "Connection: close" reply has closed it.
-            log_tcp_report(sock, self._upload_started)
+            log_tcp_report(sock, self._upload_started,
+                           getattr(self, "_upload_tcp_baseline", None))
 
         response_bytes = http_resp.read()
         AirDropUtil.write_debug(
@@ -362,9 +367,11 @@ class AirDropClient:
 
     # Optional reporting hooks, set by the application (secure_receiver.install). They receive real byte
     # counts only: start_hook(total_bytes) once the archive is built, progress_hook(done, total) after each
-    # slice has been handed to the kernel.
+    # slice has been handed to the kernel. waiting_hook() means all body bytes
+    # have been queued and the receiver has yet to confirm the upload.
     start_hook = None
     progress_hook = None
+    waiting_hook = None
 
     @staticmethod
     def _archive_members(path):
@@ -721,6 +728,9 @@ class AirDropClient:
         prev = sock.gettimeout()
         sock.settimeout(stall)
         started = self._upload_started = time.monotonic()
+        # This socket also carried /Discover and /Ask (including its thumbnail).
+        # Report counters for the upload interval rather than that whole session.
+        self._upload_tcp_baseline = tcp_snapshot(sock)
         try:
             view = memoryview(data)
             for off in range(0, len(view), self.SEND_SLICE):
@@ -738,7 +748,7 @@ class AirDropClient:
         except BaseException:
             # A failed upload says how lossy the link was (a successful one is reported by send_upload,
             # once the receiver has answered, so that the numbers cover the whole transfer).
-            log_tcp_report(sock, started)
+            log_tcp_report(sock, started, self._upload_tcp_baseline)
             raise
         finally:
             # The socket may already be closed by the failure path above it.
@@ -758,11 +768,8 @@ TCP_INFO = 11
 _TCP_INFO_LAYOUT = "8B24I4Q6I4Q2I2Q"     # struct tcp_info up to tcpi_bytes_retrans (Linux 4.19+)
 
 
-def tcp_report(sock):
-    """A one-line summary of a TCP connection's real history (retransmissions, RTT, RTO), or None.
-
-    Read from the kernel's own counters (TCP_INFO), so a failed or slow upload says how lossy the
-    link was instead of leaving it to guesswork."""
+def tcp_snapshot(sock):
+    """Read Linux TCP_INFO counters, or None on unsupported/older kernels."""
     try:
         size = struct.calcsize(_TCP_INFO_LAYOUT)
         raw = sock.getsockopt(socket.IPPROTO_TCP, TCP_INFO, size)
@@ -775,14 +782,35 @@ def tcp_report(sock):
     rto, rtt, rttvar, cwnd, total_retrans = u32[0], u32[15], u32[16], u32[18], u32[23]
     data_segs_out = v[41]
     bytes_acked, bytes_sent, bytes_retrans = v[34], v[48], v[49]
-    share = 100.0 * total_retrans / data_segs_out if data_segs_out else 0.0
-    return (f"TCP: {bytes_acked} byte confermati, {data_segs_out} segmenti inviati, {total_retrans} ritrasmessi "
-            f"({share:.0f}%), RTT {rtt // 1000} ms (±{rttvar // 1000}), RTO {rto // 1000} ms, cwnd {cwnd}, "
-            f"byte inviati {bytes_sent}, ritrasmessi {bytes_retrans}")
+    return dict(rto=rto, rtt=rtt, rttvar=rttvar, cwnd=cwnd,
+                total_retrans=total_retrans, data_segs_out=data_segs_out,
+                bytes_acked=bytes_acked, bytes_sent=bytes_sent,
+                bytes_retrans=bytes_retrans)
 
 
-def log_tcp_report(sock, started):
-    report = tcp_report(sock)
+def tcp_report(sock, baseline=None):
+    """A measured TCP summary, optionally restricted to an upload interval.
+
+    These are TCP stream bytes, including HTTP/TLS overhead. They are diagnostic
+    counters, never a substitute for file byte progress.
+    """
+    stats = tcp_snapshot(sock)
+    if stats is None:
+        return None
+    if baseline is not None:
+        for name in ("bytes_acked", "bytes_sent", "bytes_retrans",
+                     "data_segs_out", "total_retrans"):
+            stats[name] = max(0, stats[name] - baseline[name])
+    share = (100.0 * stats["total_retrans"] / stats["data_segs_out"]
+             if stats["data_segs_out"] else 0.0)
+    prefix = "TCP upload" if baseline is not None else "TCP connessione"
+    return (f"{prefix}: {stats['bytes_acked']} byte confermati, {stats['data_segs_out']} segmenti inviati, {stats['total_retrans']} ritrasmessi "
+            f"({share:.0f}%), RTT {stats['rtt'] // 1000} ms (±{stats['rttvar'] // 1000}), RTO {stats['rto'] // 1000} ms, cwnd {stats['cwnd']}, "
+            f"byte inviati {stats['bytes_sent']}, ritrasmessi {stats['bytes_retrans']}")
+
+
+def log_tcp_report(sock, started, baseline=None):
+    report = tcp_report(sock, baseline)
     if report:
         elapsed = time.monotonic() - started
         logger.info(f"{report}, durata {elapsed:.1f} s")

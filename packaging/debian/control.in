@@ -17,6 +17,7 @@ Description: AirDrop between Linux and iPhone/iPad (MediaTek MT7921/MT7922)
  is about to be received, a diagnostics page with guided repairs, and a
  "Send with Linux AirDrop" entry for GNOME Files (with python3-nautilus).
  .
- Experimental: it temporarily loads patched mac80211/mt7921 modules (built for
- kernel 7.3.0-9-generic) and uses the Wi-Fi card exclusively while visible.
+ Experimental: uses the native active-monitor driver with Wi-Fi Direct, or
+ temporarily loads patched modules built only for kernel 7.3.0-9-generic.
+ Uses the Wi-Fi card exclusively while visible.
  Tested on a single machine. The user interface is currently Italian only.

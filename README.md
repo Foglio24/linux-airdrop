@@ -4,11 +4,19 @@ Native **AirDrop between Linux and iPhone/iPad** for PCs with a **MediaTek MT792
 
 > **Language: the app's user interface is currently Italian only.** Buttons, menus, notifications and in-app messages are in Italian; this documentation is in English. A translation is planned. The UI labels quoted below are given in Italian with their English meaning.
 
-> **Experimental software.** It temporarily replaces the Wi-Fi driver modules of your kernel and takes the Wi-Fi card over exclusively while it is visible. It has been tested on **one machine** (Ubuntu 26.10, kernel 7.3.0-9-generic, MT7922, one iPhone on iOS 27). A kernel lock-up is possible; a reboot always restores the original Ubuntu modules. Use it at your own risk.
+> **Experimental software.** It takes the Wi-Fi card over exclusively while it is visible and, on kernels whose driver lacks active monitor, temporarily replaces the Wi-Fi driver modules. It has been tested on **two systems with one MT7922 each**: Ubuntu 26.10 with kernel 7.3.0-9-generic (patched modules) and AnduinOS 2.0.4 with kernel 7.0.0-38-generic (stock driver), with one iPhone on iOS 27 and one iPad. A kernel lock-up is possible; a reboot always restores the original modules. Use it at your own risk.
 
 ## Status
 
 Working on the tested machine, in both directions: an iPhone sends files to the PC (`/Discover`, `/Ask`, `/Upload`), and the PC sends files to the iPhone. The iPhone can stay on **Receiving Off** (*Ricezione disattivata*) while sending to the PC. See [`verification.json`](verification.json) for what was checked, what was not, and the known limitations.
+
+### What 1.2 changes
+
+- **Stock driver support, chosen by capability, not by kernel version.** If the running `mt7921e` already offers active monitor and Wi-Fi Direct (P2P-GO), the app uses it as is: the privileged bridge asks nl80211 for `ACTIVE` + `SKIP_TX` on its own monitor before bringing it up, keeps the managed parent interface up while the monitors exist, and refuses a session it cannot clean up safely. The patched modules remain the fallback, only for the exact kernel they were built for. See [`docs/KERNEL-COMPATIBILITY.md`](docs/KERNEL-COMPATIBILITY.md) and [`docs/ANDUINOS.md`](docs/ANDUINOS.md).
+- **Wi-Fi Direct on channel 6 or 44 (5 GHz).** The channel is checked against the driver's regulatory flags (no NO-IR/DFS/radar channels) before anything changes. Channel 36 was dropped: the iPhone never uses it and never found the PC there. On channel 44 the bulk of a receive ran 3-4 times faster than on channel 6; discovery can take a little longer.
+- **Receiving from the iPhone/iPad no longer stops at 97-99 %.** The phone stopped once our last TCP acknowledgements were lost, because it listens on our channel one slot in sixteen at the end of a transfer and TCP never repeats a pure ACK. The receiver now sends TCP keepalive probes (each carries the current ACK) every second while the sender is quiet. The same 2.85 MB file that stopped at 91 % arrived whole in about 12 s on channel 44. Measurements and captures: [`docs/SENDING.md`](docs/SENDING.md).
+- **Diagnostics for transfers.** The receiver logs the upload headers and, when a body ends early, where in the chunked framing it stopped and the last bytes read; the sender logs TCP counters for the upload only and shows *in attesa della conferma* (waiting for confirmation) once the body is sent. The receive read timeout is 120 s.
+- **Keep the defaults:** radio acknowledgements on (*Conferme radio*) and the default data rate. Both turning acknowledgements off and the experimental `--data-rate 36` made receives fail at the tail.
 
 ### What 1.1 adds
 
@@ -25,13 +33,13 @@ All of it is documented in [`docs/FEATURES.md`](docs/FEATURES.md). The radio cod
 
 Sending large files to the iPhone used to stall after a few hundred kB: frames to the phone went out without radio acknowledgements. 1.1 turns them on (*Visibilità → Conferme radio*) and makes the sender's TCP more persistent; the analysis, with measurements from a link emulator, is in [`docs/SENDING.md`](docs/SENDING.md) (not yet confirmed with the phone).
 
-What was and was not tested in 1.1 is in [`docs/TESTING.md`](docs/TESTING.md). Short version: the new code is covered by automated tests, a real sender talking to a real receiver in a private network namespace, and the live checks were run read-only against the working machine; **the new features have not yet been tried with an iPhone**, and the GNOME Files menu entry has not been run inside a real Files because `python3-nautilus` is not installed on the development machine.
+What was and was not tested is in [`docs/TESTING.md`](docs/TESTING.md). Short version: everything is covered by automated tests, including a real sender talking to a real receiver in a private network namespace; 1.2 was also tried with a real iPhone and iPad (receiving several files; sending only small files). The GNOME Files menu entry has not been run inside a real Files because `python3-nautilus` is not installed on the development machine.
 
 ## Requirements
 
 - Ubuntu 26.10 on amd64 (CPython 3.14, GTK 4, libadwaita), GNOME. The tray icon needs the *AppIndicator* shell extension, enabled by default on Ubuntu.
 - A MediaTek **MT7921/MT7922** Wi-Fi card (driver `mt7921e`) and **one** Wi-Fi card in the system.
-- Kernel **7.3.0-9-generic** for the bundled driver modules. Ubuntu's kernel disables *active monitor* for MT792x, which AirDrop needs, so the app loads three patched modules (`mac80211`, `mt792x-lib`, `mt7921e`) built from the exact Ubuntu 7.3.0-9.9 sources. On another kernel they cannot be used and the app tells you so.
+- Either a **stock driver with active monitor and P2P-GO** (for example Linux 7.0.0-38-generic on AnduinOS 2.0.4; the app checks the capabilities itself), used with Wi-Fi Direct on channel 6 or 44; or kernel **7.3.0-9-generic** for the bundled driver modules. Ubuntu's 7.3 kernel disables *active monitor* for MT792x, which AirDrop needs, so there the app loads three patched modules (`mac80211`, `mt792x-lib`, `mt7921e`) built from the exact Ubuntu 7.3.0-9.9 sources. On a kernel that offers neither, the app tells you so before touching the network.
 - Ethernet is recommended: the Wi-Fi card is used exclusively while the PC is visible.
 - BlueZ, NetworkManager, `iw`, `ip`, `wpa_supplicant` and `pkexec` (all present on a default Ubuntu desktop).
 
@@ -71,7 +79,7 @@ To **send from the PC**: with a session running press **Invia file…** (*Send f
 
 You can also **drag files or folders onto the window**, choose **Invia con Linux AirDrop** from the context menu of GNOME Files, or run `linux-airdrop FILE…`; if the PC is not visible yet the app asks before turning AirDrop on. `linux-airdrop --diagnose` prints the diagnostics report in a terminal.
 
-If the PC does not show up, leave the AirDrop sheet open for about a minute. In **Visibilità** (*Visibility*) you can change the Wi-Fi channel (6, 36, 44) and the Wi-Fi Direct option. **Registro** (*Log*; menu ☰ or Ctrl+L) shows what is going on and has a copy button; every session is also saved under `~/.local/state/linux-airdrop/`.
+If the PC does not show up, leave the AirDrop sheet open for about a minute. In **Visibilità** (*Visibility*) you can change the Wi-Fi channel (6, or 44 for faster transfers) and the Wi-Fi Direct option. **Registro** (*Log*; menu ☰ or Ctrl+L) shows what is going on and has a copy button; every session is also saved under `~/.local/state/linux-airdrop/`.
 
 ## Interface, tray icon and background
 
@@ -103,7 +111,7 @@ The app only uses the helper when it is *ready*: root-owned, not modifiable, wit
 
 ## Wi-Fi Direct (default mode)
 
-With **Visibilità → Wi-Fi Direct** on (default, channel 6 only) the app creates a temporary Wi-Fi Direct group and gives its address to the two monitor interfaces. With monitor interfaces only, the phone saw the PC but AirDrop connections stayed pending; with the Wi-Fi Direct group the card holds the channel and transfers complete, as other MT7922 users reported ([report](https://github.com/t4t5/omdrop-owl/pull/24), [proposal](https://github.com/t4t5/omdrop-owl/pull/55)).
+With **Visibilità → Wi-Fi Direct** on (default; channel 6, or 44 if the regulatory domain allows a group owner there) the app creates a temporary Wi-Fi Direct group and gives its address to the two monitor interfaces. With monitor interfaces only, the phone saw the PC but AirDrop connections stayed pending; with the Wi-Fi Direct group the card holds the channel and transfers complete, as other MT7922 users reported ([report](https://github.com/t4t5/omdrop-owl/pull/24), [proposal](https://github.com/t4t5/omdrop-owl/pull/55)).
 
 The Wi-Fi card must be disconnected from any network; Ethernet may stay connected. The phone does not join any new network. From a terminal: `./start.sh --activate` (Wi-Fi Direct) or `./start.sh --no-go-anchor --activate` (monitors only).
 
@@ -123,7 +131,8 @@ Things found along the way, for anyone debugging something similar:
 - `store.py` (SQLite history and remembered devices), `progress.py` (speed and time left from real counters), `outgoing.py` (what may be sent, ZIP of folders), `fileinfo.py` (kinds, safe text, number formats).
 - `diagnostics.py` and `repair.py`: the health checks, the report, the known faults and the attempt limits. `ui_history.py`, `ui_devices.py`, `ui_diagnostics.py`, `ui_transfers.py`: the pages of the window.
 - `nautilus/`: the GNOME Files extension and script.
-- `docs/`: [features](docs/FEATURES.md), [sending to the iPhone](docs/SENDING.md), [trusted devices](docs/TRUSTED-DEVICES.md), [testing](docs/TESTING.md).
+- `radio_compat.py`: decides between the stock driver and the patched modules from the card's capabilities.
+- `docs/`: [features](docs/FEATURES.md), [sending and receiving over AWDL](docs/SENDING.md), [kernel compatibility](docs/KERNEL-COMPATIBILITY.md), [the AnduinOS installation](docs/ANDUINOS.md), [trusted devices](docs/TRUSTED-DEVICES.md), [testing](docs/TESTING.md).
 - `system_helper.py`, `autostart.py`: the passwordless helper and the login entry.
 - `backend/`: OWL (`owl-modern`, plus the original `owl`), the vendored OpenDrop and its Python dependencies, the BLE advertisement script, and `driver-compat/` with the three kernel modules, their patches and sources.
 - `packaging/`: the script that builds the `.deb` (`packaging/build-deb.sh`).
@@ -135,7 +144,7 @@ Ubuntu's 7.3.0-9 kernel disables active monitor for MT792x drivers. The app dete
 
 The test modules are loaded in memory for the session; the originals on disk are never replaced. At the end the app reloads the original modules and checks their versions; a kernel lock-up can require a reboot, and a reboot always uses Ubuntu's original modules. This mode is unavailable after a kernel update: the modules have to be rebuilt for the new version.
 
-The bundled `owl-modern` engine includes the nine patches of [omdrop-owl](https://github.com/t4t5/omdrop-owl), with sync-master election by metric (`-E`). By default it uses the fixed channel 6 (`-F`) and the `intersect` strategy, which announces the overlap with the Apple device's channels. Pick the channel in the UI or with `--channel 44`; `--channel-hopping` enables an experimental alternative. The Bluetooth advertisement uses the current OmDrop format, without contact hashes.
+The bundled `owl-modern` engine includes the nine patches of [omdrop-owl](https://github.com/t4t5/omdrop-owl), with sync-master election by metric (`-E`). By default it uses a fixed channel (`-F`, 6 unless you pick 44) and the `intersect` strategy, which announces the overlap with the Apple device's channels. Pick the channel in the UI or with `--channel 44`; `--channel-hopping` enables an experimental alternative. The Bluetooth advertisement uses the current OmDrop format, without contact hashes.
 
 The password is needed to set up the radio link temporarily; no passwordless sudo rules or permanent services are added (the optional polkit helper above is the only exception, and it is opt-in). The HTTPS server and all file reads/writes run as a normal user. The privileged bridge only manages the selected Wi-Fi card and its own interfaces; it saves and restores the previous state and does not stop NetworkManager.
 
