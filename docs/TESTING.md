@@ -1,5 +1,15 @@
 # What was tested, and what that does and does not prove
 
+## NexaAWDL
+
+`test_nexaawdl_frames.py` (codec round trips, strict validation, random and mutated input, real iPhone frames),
+`test_nexaawdl_core.py` (window clock including the 16-bit counter wrap, clock offset, election, peer table, IPv6/mDNS
+reading, the hardware probe on this PC's recorded `iw`/`lspci`/`ethtool`/`nmcli` output), `test_nexaawdl_engine.py` (lifecycle,
+synchronisation, AirDrop detection, hostile input, status views), `test_nexaawdl_process.py` (the engine as a real
+child process with an inherited socket, and its supervision by the bridge). Not covered, and said so in
+[`NEXAAWDL.md`](NEXAAWDL.md): a full-length capture with TLVs, any transmission, and a live session with the engine
+running next to OWL.
+
 ## 1.2
 
 New automated tests cover the capability-based radio plan (`test_radio_compat.py`), the nl80211 monitor flags and cleanup

@@ -49,7 +49,7 @@
   "pending_hardware_test": "If discovery stops after some minutes while the session is up: restart only blewake.py (new BLE tag) and see whether the phone reconnects, before restarting the radio session. Not yet reproduced since the 0.5 s announce fix.",
   "last_kernel_error": "2026-10-14 23:37:48 Europe/Rome: drv_unassign_vif_chanctx warning followed by ieee80211_free_chanctx stale list-pointer OOPS while deleting paired active monitor.",
   "current_boot_recovery": "Trial stopped normally; stock mac80211 version verified and awdl0 removed.",
-  "next_step": "Repeat large receives on channel 44 to confirm the keepalive fix; send a multi-MB file from the PC to the iPhone.",
+  "next_step": "Build and inject PSF/MIF frames from a monitor interface and check with a second capture that an Apple device reacts.",
   "updated": "2026-10-18",
   "go_anchor": {
     "status": "default mode; verified end to end on 2026-10-15 after the interface-selection fix",
@@ -106,5 +106,6 @@
     "status": "small send confirmed with the iPhone; large sends not yet verified",
     "first_real_check_after_fix": "2026-10-16 12:03, radio acknowledgements on: a 62 KB image sent to the iPhone completed; 1.5 MB received from the iPhone in 3.3 s (same as before, so receiving is not slowed down). A multi-megabyte send has NOT been tried yet."
   },
-  "v1_2_real_device": "AnduinOS 2.0.4, Linux 7.0.0-38-generic, stock mt7921e (MT7922), Wi-Fi Direct anchor. iPhone->PC 5.56 MB photo on channel 6: complete (~2 min). iPad->PC 2.85 MB PDF on channel 44: stopped at 91 % before the receiver keepalive fix, complete in ~12 s after it. Receives with radio ACKs off or data rate 36 Mbit/s stopped at 97-99 %. Channel 36: never discovered. PC->iPhone: small files only."
+  "v1_2_real_device": "AnduinOS 2.0.4, Linux 7.0.0-38-generic, stock mt7921e (MT7922), Wi-Fi Direct anchor. iPhone->PC 5.56 MB photo on channel 6: complete (~2 min). iPad->PC 2.85 MB PDF on channel 44: stopped at 91 % before the receiver keepalive fix, complete in ~12 s after it. Receives with radio ACKs off or data rate 36 Mbit/s stopped at 97-99 %. Channel 36: never discovered. PC->iPhone: small files only.",
+  "v1_3_nexaawdl": "NexaAWDL observer engine. Real full-length capture (tcpdump -s 0, 90 s, 5011 frames, MT7922 on 7.0.0-38, an iPhone sending a 2.3 MB PNG): 313 MIF frames decoded with every TLV and re-encoded byte for byte, 0 malformed; window clock 100 % of recent predictions within 3 TU (mean error 0.56 TU); window model 99.7 % consistent over 1889 data frames. Not verified: any transmission, AirDrop announcement detection on real mDNS responses, a native data path. Tests: 555 in the whole suite."
 }

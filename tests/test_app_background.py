@@ -351,6 +351,28 @@ class BackgroundBehaviour(unittest.TestCase):
             self.app.bridge = None
             self.app.go_row.set_active(old_go)
 
+    def test_nexaawdl_arguments_follow_the_setting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = (self.app.nexa_dir, self.app.nexa_status_path, self.app.nexa_enabled, self.app.nexa_level)
+            self.app.nexa_dir = Path(tmp) / "nexaawdl"
+            self.app.nexa_status_path = self.app.nexa_dir / "status.json"
+            try:
+                self.app.nexa_enabled, self.app.nexa_level = True, "debug"
+                self.app.nexa_dir.mkdir()
+                self.app.nexa_status_path.write_text("{}")            # left by an earlier session
+                argv = self.app.nexa_arguments()
+                self.assertEqual(argv, ["--nexaawdl-dir", str(self.app.nexa_dir), "--nexaawdl-code",
+                                        str(app_module.BASE), "--nexaawdl-level", "debug"])
+                self.assertEqual(self.app.nexa_dir.stat().st_mode & 0o777, 0o700)
+                self.assertFalse(self.app.nexa_status_path.exists())
+                started = self.start_with("ready", "25m")
+                self.assertIn("--nexaawdl-dir", started)
+                self.app.nexa_enabled = False
+                self.assertEqual(self.app.nexa_arguments(), [])
+                self.assertNotIn("--nexaawdl-dir", self.start_with("ready", "25m"))
+            finally:
+                self.app.nexa_dir, self.app.nexa_status_path, self.app.nexa_enabled, self.app.nexa_level = old
+
     def test_native_go_can_select_a_five_ghz_channel_and_pass_it_to_the_bridge(self):
         old_channel = self.app.channel.get_selected()
         try:
@@ -437,21 +459,28 @@ class SettingsFile(unittest.TestCase):
     def test_round_trip(self):
         values = {"name": "Studio", "channel": 44, "wifi_direct": False, "background": False,
                   "auto_visible": True, "duration": "always", "remember": False, "auto_repair": False,
-                  "radio_ack": False}
+                  "radio_ack": False, "nexa_enabled": False, "nexa_level": "debug"}
         app_module.save_settings(values)
         self.assertEqual(app_module.load_settings(), values)
 
     def test_missing_corrupt_or_hostile_files_fall_back_to_defaults(self):
         defaults = {"name": "", "channel": 6, "wifi_direct": True, "background": True,
                     "auto_visible": False, "duration": "25m", "remember": True, "auto_repair": True,
-                    "radio_ack": True}
+                    "radio_ack": True, "nexa_enabled": True, "nexa_level": "info"}
         self.assertEqual(app_module.load_settings(), defaults)
         app_module.SETTINGS.parent.mkdir(parents=True)
         for text in ("not json", "[1, 2]", json.dumps({"name": 7, "channel": 99, "wifi_direct": "yes", "background": None,
                                                     "auto_visible": 1, "duration": "forever", "remember": "no",
-                                                    "auto_repair": 0, "radio_ack": "sì"})):
+                                                    "auto_repair": 0, "radio_ack": "sì",
+                                                    "nexa_enabled": "yes", "nexa_level": "everything"})):
             app_module.SETTINGS.write_text(text)
             self.assertEqual(app_module.load_settings(), defaults)
+
+    def test_nexaawdl_settings_are_validated(self):
+        app_module.SETTINGS.parent.mkdir(parents=True)
+        app_module.SETTINGS.write_text(json.dumps({"nexa_enabled": False, "nexa_level": "warning"}))
+        loaded = app_module.load_settings()
+        self.assertEqual((loaded["nexa_enabled"], loaded["nexa_level"]), (False, "warning"))
 
     def test_name_is_trimmed_and_bounded(self):
         app_module.SETTINGS.parent.mkdir(parents=True)

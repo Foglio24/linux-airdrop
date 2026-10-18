@@ -1,0 +1,10 @@
+driver: mt7921e
+version: 7.0.0-38-generic
+firmware-version: ____000000-20260224103233
+expansion-rom-version: 
+bus-info: 0000:04:00.0
+supports-statistics: yes
+supports-test: no
+supports-eeprom-access: no
+supports-register-dump: no
+supports-priv-flags: no

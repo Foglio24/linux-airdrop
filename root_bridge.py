@@ -15,6 +15,7 @@ import re
 import select
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -281,14 +282,67 @@ class DriverTrial:
                     emit("error", message="Ripristino scheda Wi-Fi: " + str(exc))
 
 
+NEXA_RESTARTS = 3
+NEXA_LEVELS = ("error", "warning", "info", "debug")
+
+
+def process_owner(pid):
+    """(uid, gid) of a process from /proc, or None."""
+    try:
+        fields = {}
+        for line in Path(f"/proc/{int(pid)}/status").read_text().splitlines():
+            key, _, value = line.partition(":")
+            if key in ("Uid", "Gid"):
+                fields[key] = int(value.split()[0])
+        return fields["Uid"], fields["Gid"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def nexaawdl_config(directory, code, level):
+    """Validate the engine's settings: absolute paths, a real directory owned by the desktop user, known level."""
+    if level not in NEXA_LEVELS:
+        raise ValueError("livello di log non valido")
+    for path in (directory, code):
+        if not os.path.isabs(path) or "\0" in path:
+            raise ValueError("percorso non assoluto")
+    run = Path(code) / "nexaawdl" / "run.py"
+    if not run.is_file():
+        raise ValueError("motore non trovato")
+    info = os.lstat(directory)
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError("la cartella di stato non è una cartella")
+    return {"dir": directory, "run": str(run), "level": level, "uid": info.st_uid, "gid": info.st_gid}
+
+
+def open_monitor_socket(ifname):
+    """Raw packet socket on a monitor interface (radiotap frames). The only privileged act of the engine."""
+    sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+        try:
+            sock.setsockopt(263, 23, 1)           # PACKET_IGNORE_OUTGOING: never read back our own injections
+        except OSError:
+            pass
+        sock.bind((ifname, 0))
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
 class Bridge:
     def __init__(self, iface, channel, guardian, active_only=False, fixed_radio=False, fixed_ack=False, go_anchor=False,
-                 max_seconds=DEFAULT_SECONDS, native_driver=False, data_rate=None):
+                 max_seconds=DEFAULT_SECONDS, native_driver=False, data_rate=None, nexaawdl=None):
         self.iface, self.channel, self.guardian = iface, channel, guardian
         self.max_seconds = max_seconds
         self.active_only = active_only
         self.native_driver = native_driver
         self.data_rate = data_rate
+        self.nexaawdl = nexaawdl          # validated settings of the optional observer engine, or None
+        self.nexa = None
+        self.nexa_sock = None
+        self.nexa_restarts = 0
         self.fixed_radio = fixed_radio or go_anchor
         self.go_anchor = go_anchor
         self.anchor = None
@@ -413,10 +467,78 @@ class Bridge:
             addr = command(["ip", "-6", "address", "show", "dev", "awdl0"])
             if "inet6 fe80:" in addr and "tentative" not in addr:
                 threading.Thread(target=self.observe_discovery, daemon=True).start()
+                self.start_nexaawdl()
                 emit("ready", interface="awdl0", channel=self.channel)
                 return
             time.sleep(0.1)
         raise RuntimeError("IPv6 locale AWDL non disponibile")
+
+    def start_nexaawdl(self):
+        """Start the NexaAWDL observer as the desktop user. Never fatal: AirDrop keeps running without it."""
+        cfg = self.nexaawdl
+        if not cfg or self.nexa is not None:
+            return
+        try:
+            if cfg["uid"] == 0:
+                raise RuntimeError("la cartella di stato appartiene a root")
+            owner = process_owner(self.guardian)
+            if owner is None or owner[0] != cfg["uid"]:
+                raise RuntimeError("la cartella di stato non appartiene all'utente dell'app")
+            iface, last = None, None
+            for candidate in ("ldmon0", "ldack0"):          # the passive monitor if there is one, else the active one
+                try:
+                    self.nexa_sock = open_monitor_socket(candidate)
+                    iface = candidate
+                    break
+                except OSError as exc:
+                    last = exc
+            if iface is None:
+                raise RuntimeError(f"nessuna interfaccia monitor da ascoltare ({last})")
+            self.nexa = subprocess.Popen(
+                ["/usr/bin/python3", "-I", "-B", cfg["run"], "--fd", str(self.nexa_sock.fileno()), "--dir", cfg["dir"],
+                 "--iface", iface, "--level", cfg["level"]],
+                pass_fds=(self.nexa_sock.fileno(),), user=owner[0], group=owner[1], extra_groups=[], cwd="/",
+                env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+            emit("log", source="nexaawdl", message="Motore NexaAWDL avviato (sola osservazione, nessun privilegio)")
+        except Exception as exc:
+            emit("log", source="nexaawdl", message=f"Motore NexaAWDL non avviato: {exc}. AirDrop continua con OWL.")
+            self.stop_nexaawdl()
+            self.nexaawdl = None
+
+    def stop_nexaawdl(self):
+        proc, sock = self.nexa, self.nexa_sock
+        self.nexa = self.nexa_sock = None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=3)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                emit("log", source="cleanup", message="Arresto NexaAWDL: " + str(exc))
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def watch_nexaawdl(self):
+        """Restart a crashed engine a few times, then give it up. OWL and the transfer are never touched."""
+        if self.nexa is None or self.nexa.poll() is None or STOP.is_set():
+            return
+        code = self.nexa.returncode
+        self.stop_nexaawdl()
+        if self.nexa_restarts >= NEXA_RESTARTS:
+            emit("log", source="nexaawdl", message=f"Motore NexaAWDL fermato (codice {code}) dopo {NEXA_RESTARTS} riavvii; "
+                                                 "AirDrop continua con OWL.")
+            self.nexaawdl = None
+            return
+        self.nexa_restarts += 1
+        emit("log", source="nexaawdl", message=f"Motore NexaAWDL terminato (codice {code}); riavvio {self.nexa_restarts}/{NEXA_RESTARTS}.")
+        self.start_nexaawdl()
 
     def observe_discovery(self):
         """Bounded, receive-only protocol summaries for the whole session; never retains payloads."""
@@ -466,6 +588,7 @@ class Bridge:
             self.require_parent_up()
             if self.owl.poll() is not None:
                 raise RuntimeError("Il collegamento AWDL si è interrotto.")
+            self.watch_nexaawdl()
             if self.anchor and (not self.anchor.alive() or
                                 any(not (Path("/sys/class/net") / name).exists()
                                     for name in [*self.created, self.anchor_interface])):
@@ -492,6 +615,7 @@ class Bridge:
 
     def cleanup(self):
         emit("status", message="Ripristino della scheda Wi-Fi…")
+        self.stop_nexaawdl()          # first: it holds a socket on a monitor interface that is about to go
         if self.owl and self.owl.poll() is None:
             try:
                 self.owl.terminate()
@@ -579,6 +703,9 @@ def main():
     p.add_argument("--fixed-radio", action="store_true")
     p.add_argument("--fixed-ack", action="store_true")
     p.add_argument("--go-anchor", action="store_true")
+    p.add_argument("--nexaawdl-dir", help="state directory of the optional NexaAWDL observer (enables it)")
+    p.add_argument("--nexaawdl-code", help="directory that contains the nexaawdl package")
+    p.add_argument("--nexaawdl-level", default="info", choices=NEXA_LEVELS)
     p.add_argument("--data-rate", type=data_rate_arg, default=None,
                    help="PHY rate of data frames sent to the phone (OWL -R): 6..54 Mbit/s, mcsN or mcsN-sgi")
     p.add_argument("--max-seconds", type=int, default=DEFAULT_SECONDS,
@@ -612,7 +739,14 @@ def main():
                     raise RuntimeError(f"{name} è già in uso. Chiudi l’altra sessione AWDL.")
             GoAnchor(args.iface, phy, args.channel, command, emit).preflight()
         iface = trial.start() if trial else args.iface
-        bridge = Bridge(iface, args.channel, args.guardian, active_only=False, fixed_radio=args.fixed_radio, fixed_ack=args.fixed_ack, go_anchor=args.go_anchor, max_seconds=args.max_seconds, native_driver=not args.driver_trial, data_rate=args.data_rate)
+        nexa = None
+        if args.nexaawdl_dir and args.nexaawdl_code:
+            try:
+                nexa = nexaawdl_config(args.nexaawdl_dir, args.nexaawdl_code, args.nexaawdl_level)
+            except (OSError, ValueError) as exc:
+                emit("log", source="nexaawdl", message=f"Motore NexaAWDL disattivato: {exc}")
+        bridge = Bridge(iface, args.channel, args.guardian, active_only=False, fixed_radio=args.fixed_radio, fixed_ack=args.fixed_ack, go_anchor=args.go_anchor, max_seconds=args.max_seconds, native_driver=not args.driver_trial, data_rate=args.data_rate,
+                        nexaawdl=nexa)
         bridge.start()
         if not STOP.is_set():
             bridge.supervise()

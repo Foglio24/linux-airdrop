@@ -10,6 +10,14 @@ Native **AirDrop between Linux and iPhone/iPad** for PCs with a **MediaTek MT792
 
 Working on the tested machine, in both directions: an iPhone sends files to the PC (`/Discover`, `/Ask`, `/Upload`), and the PC sends files to the iPhone. The iPhone can stay on **Receiving Off** (*Ricezione disattivata*) while sending to the PC. See [`verification.json`](verification.json) for what was checked, what was not, and the known limitations.
 
+### What 1.3 adds: NexaAWDL
+
+A new engine, `nexaawdl/`, observes and analyses the AWDL air next to OWL: it decodes the frames, follows each peer's
+window clock, tells AWDL presence from AirDrop availability and shows it all in a new **NexaAWDL** page (state, wireless,
+devices, diagnostics, settings). It runs without privileges, never touches OWL or a transfer, and **does not transmit**
+yet. What is verified and what is not: [`docs/NEXAAWDL.md`](docs/NEXAAWDL.md). `python3 -m nexaawdl hardware` identifies the
+card; `python3 -m nexaawdl analyze capture.pcap` replays a capture.
+
 ### What 1.2 changes
 
 - **Stock driver support, chosen by capability, not by kernel version.** If the running `mt7921e` already offers active monitor and Wi-Fi Direct (P2P-GO), the app uses it as is: the privileged bridge asks nl80211 for `ACTIVE` + `SKIP_TX` on its own monitor before bringing it up, keeps the managed parent interface up while the monitors exist, and refuses a session it cannot clean up safely. The patched modules remain the fallback, only for the exact kernel they were built for. See [`docs/KERNEL-COMPATIBILITY.md`](docs/KERNEL-COMPATIBILITY.md) and [`docs/ANDUINOS.md`](docs/ANDUINOS.md).

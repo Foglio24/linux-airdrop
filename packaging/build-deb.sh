@@ -4,7 +4,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(dirname "$here")
-version=${1:-1.2.0}
+version=${1:-1.3.0}
 out=${2:-"$root/dist"}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -15,7 +15,7 @@ mkdir -p "$lib" "$doc" "$pkg/DEBIAN" "$pkg/usr/bin" "$pkg/usr/share/applications
          "$pkg/usr/share/icons/hicolor/scalable/apps" "$pkg/usr/share/icons/hicolor/symbolic/apps"
 
 # The program: everything needed at run time, nothing else (no tests, no packaging, no VCS data).
-for item in app.py confirm.py tray.py autostart.py system_helper.py root_bridge.py p2p_anchor.py radio_compat.py \
+for item in app.py confirm.py tray.py autostart.py system_helper.py root_bridge.py p2p_anchor.py radio_compat.py ui_nexaawdl.py nexaawdl \
             awdl_diag.py secure_receiver.py fileinfo.py progress.py transfer_events.py store.py preview.py \
             identity.py outgoing.py diagnostics.py repair.py ui_transfers.py ui_history.py ui_devices.py \
             ui_diagnostics.py nautilus start.sh LICENSE verification.json icons backend; do

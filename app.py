@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 import radio_compat
@@ -144,6 +144,7 @@ from store import Store, make_device_key
 from tray import TrayIcon
 from ui_devices import DevicesPage
 from ui_diagnostics import DiagnosticsPage
+from ui_nexaawdl import NexaAwdlPage
 from ui_history import HistoryPage
 from ui_transfers import FINAL_STATES, Transfer, TransferList
 
@@ -161,7 +162,7 @@ SETTINGS = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
 def load_settings():
     """Small, validated preferences file. Anything unexpected falls back to the defaults."""
     defaults = {"name": "", "channel": 6, "wifi_direct": True, "background": True, "auto_visible": False, "duration": "25m",
-                "remember": True, "auto_repair": True, "radio_ack": True}
+                "remember": True, "auto_repair": True, "radio_ack": True, "nexa_enabled": True, "nexa_level": "info"}
     try:
         saved = json.loads(SETTINGS.read_text())
     except (OSError, ValueError):
@@ -172,11 +173,13 @@ def load_settings():
         defaults["name"] = saved["name"].strip()[:64]
     if saved.get("channel") in CHANNELS:
         defaults["channel"] = saved["channel"]
-    for key in ("wifi_direct", "background", "auto_visible", "remember", "auto_repair", "radio_ack"):
+    for key in ("wifi_direct", "background", "auto_visible", "remember", "auto_repair", "radio_ack", "nexa_enabled"):
         if isinstance(saved.get(key), bool):
             defaults[key] = saved[key]
     if saved.get("duration") in [key for key, _, _ in DURATIONS]:
         defaults["duration"] = saved["duration"]
+    if saved.get("nexa_level") in ("error", "warning", "info", "debug"):
+        defaults["nexa_level"] = saved["nexa_level"]
     return defaults
 
 
@@ -242,6 +245,11 @@ class AirDrop(Adw.Application):
         self.background = saved["background"]
         self.auto_visible = saved["auto_visible"]
         self.duration = saved["duration"]
+        # NexaAWDL: the observer engine started by the bridge (see nexaawdl/ and docs/NEXAAWDL.md).
+        self.nexa_enabled = saved["nexa_enabled"]
+        self.nexa_level = saved["nexa_level"]
+        self.nexa_dir = STATE / "nexaawdl"
+        self.nexa_status_path = self.nexa_dir / "status.json"
         self.background_start = background_start
         self.tray = None
         self.resident = False
@@ -486,6 +494,8 @@ class AirDrop(Adw.Application):
         self.stack.add_titled_with_icon(self.devices_page, "devices", "Dispositivi", "phone-symbolic")
         self.diag_page = DiagnosticsPage(self)
         self.stack.add_titled_with_icon(self.diag_page, "diagnostics", "Diagnostica", "utilities-system-monitor-symbolic")
+        self.nexa_page = NexaAwdlPage(self)
+        self.stack.add_titled_with_icon(self.nexa_page, "nexaawdl", "NexaAWDL", "network-wireless-symbolic")
         self.stack.connect("notify::visible-child-name", self.page_changed)
         self.toasts = Adw.ToastOverlay(child=self.stack)
         overlay = Gtk.Overlay(child=self.toasts)
@@ -509,7 +519,8 @@ class AirDrop(Adw.Application):
         name = self.name.get_text().strip()[:64] if self.window is not None else self.saved_name
         save_settings({"name": name, "channel": self.current_channel(), "wifi_direct": self.go_wanted,
                        "background": self.background, "auto_visible": self.auto_visible, "duration": self.duration,
-                       "remember": self.remember, "auto_repair": self.auto_repair, "radio_ack": self.radio_ack})
+                       "remember": self.remember, "auto_repair": self.auto_repair, "radio_ack": self.radio_ack,
+                       "nexa_enabled": self.nexa_enabled, "nexa_level": self.nexa_level})
 
     def duration_changed(self, row, _):
         self.duration = DURATIONS[row.get_selected()][0]
@@ -919,6 +930,7 @@ class AirDrop(Adw.Application):
                 argv.append("--fixed-ack")
         if self.data_rate:
             argv += ["--data-rate", self.data_rate]
+        argv += self.nexa_arguments()
         self.bridge = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, text=True, bufsize=1)
         if not self.held:
@@ -1684,12 +1696,31 @@ class AirDrop(Adw.Application):
         self.persist()
         self.refresh_pages()
 
+    def session_is_active(self):
+        return bool(self.active or self.bridge)
+
+    def nexa_arguments(self):
+        """Arguments that enable the observer engine in the bridge; empty when it is switched off or unusable."""
+        if not self.nexa_enabled:
+            return []
+        try:
+            self.nexa_dir.mkdir(parents=True, exist_ok=True)
+            self.nexa_dir.chmod(0o700)
+            self.nexa_status_path.unlink(missing_ok=True)      # a leftover file would look like a live engine
+        except OSError:
+            return []
+        return ["--nexaawdl-dir", str(self.nexa_dir), "--nexaawdl-code", str(BASE), "--nexaawdl-level", self.nexa_level]
+
     def page_changed(self, stack, _):
         name = stack.get_visible_child_name()
         if name == "diagnostics":
             self.diag_page.start_auto()
         else:
             self.diag_page.stop_auto()
+        if name == "nexaawdl":
+            self.nexa_page.start_auto()
+        else:
+            self.nexa_page.stop_auto()
         if name in ("history", "devices"):
             self.refresh_pages()
 
