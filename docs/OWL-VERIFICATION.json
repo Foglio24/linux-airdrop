@@ -1,0 +1,110 @@
+{
+  "date": "2026-10-19",
+  "scope": "OWL nexa C backend core rewrite; local verification, no live radio transfer",
+  "binary": "backend/owl-nexa",
+  "binary_sha256": "1885b580660e3a216445bd4781dff11f3c8da21321248c43e6e8da22ad316d12",
+  "source_sha256": "4142955edce6296ae80860d66dc5a8f2636334c5f14e89119300a918b393f8ac",
+  "checks": [
+    {
+      "command": "make -j2 check",
+      "result": "passed",
+      "unit_tests": 99,
+      "daemon_tests": 15,
+      "cli_tests": 16,
+      "downstream_harnesses": 3
+    },
+    {
+      "command": "make -j2 sanitize",
+      "result": "passed",
+      "instrumentation": [
+        "AddressSanitizer",
+        "UndefinedBehaviorSanitizer"
+      ],
+      "unit_fixture_leak_detection": false
+    },
+    {
+      "command": "ASAN_OPTIONS=detect_leaks=1 build/sanitize/daemon-tests",
+      "result": "passed",
+      "tests": 15
+    },
+    {
+      "command": "python3 -I -B tests/test_root_bridge.py",
+      "result": "passed",
+      "tests": 59
+    },
+    {
+      "command": "python3 -I -B tests/test_system_helper.py",
+      "result": "passed",
+      "tests": 24
+    },
+    {
+      "command": "python3 -I -B tests/test_app_background.py",
+      "result": "passed",
+      "tests": 38
+    },
+    {
+      "command": "make install-backend; validate source hashes, binary hash and --help",
+      "result": "passed"
+    }
+  ],
+  "replays": [
+    {
+      "file": "real_full.pcap",
+      "frames": 390,
+      "exit_code": 0,
+      "summary": [
+        "REPLAY rx_action 174 rx_data 216 rx_unknown 0"
+      ],
+      "expected_exit_code": 0,
+      "passed": true
+    },
+    {
+      "file": "ricezione.pcap",
+      "frames": 6498,
+      "exit_code": 1,
+      "summary": [],
+      "expected_exit_code": 1,
+      "passed": true,
+      "note": "Ethernet capture: correctly rejected; OWL expects radiotap input."
+    },
+    {
+      "file": "ack.pcap",
+      "frames": 80827,
+      "exit_code": 0,
+      "summary": [
+        "REPLAY rx_action 6925 rx_data 10304 rx_unknown 67720"
+      ],
+      "expected_exit_code": 0,
+      "passed": true
+    },
+    {
+      "file": "mon.pcap",
+      "frames": 59495,
+      "exit_code": 0,
+      "summary": [
+        "REPLAY rx_action 6925 rx_data 6567 rx_unknown 50125"
+      ],
+      "expected_exit_code": 0,
+      "passed": true
+    },
+    {
+      "file": "full.pcap",
+      "frames": 6633,
+      "exit_code": 0,
+      "summary": [
+        "REPLAY rx_action 1286 rx_data 2678 rx_unknown 2563"
+      ],
+      "expected_exit_code": 0,
+      "passed": true
+    }
+  ],
+  "replay_instrumentation": [
+    "AddressSanitizer",
+    "UndefinedBehaviorSanitizer",
+    "LeakSanitizer"
+  ],
+  "limitations": [
+    "No live transfer with iPhone/iPad was performed using the rewritten binary.",
+    "Offline replay validates parsing and process lifecycle, not radio timing, throughput or Apple interoperability."
+  ]
+}

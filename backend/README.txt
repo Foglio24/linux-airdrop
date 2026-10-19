@@ -34,3 +34,10 @@ Changes to the vendored OpenDrop in 1.1 (small, additive; the rest of the protoc
 - opendrop/cli.py: send accepts folders as well as files.
 Everything else (events for the window, progress, cancelling a receive, the preview of the request) lives in the
 parent directory: secure_receiver.py, transfer_events.py, preview.py, identity.py.
+
+owl-nexa (customised OWL, built from owl-src/ with its Makefile): see ../docs/OWL-NEXA.md. owl-modern and owl-original stay
+as they were; owl-modern is the fallback when owl-nexa cannot start.
+
+The 19 October 2026 owl-nexa core rewrite is built with backend/owl-src/Makefile.
+Run `make check` and `make sanitize` there; verification and limits are documented
+in ../docs/OWL-NEXA.md and ../docs/OWL-VERIFICATION.json.

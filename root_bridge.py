@@ -282,6 +282,26 @@ class DriverTrial:
                     emit("error", message="Ripristino scheda Wi-Fi: " + str(exc))
 
 
+OWL_VARIANTS = ("modern", "nexa")
+GUARD = re.compile(r"(?:1[0-6]|[0-9])(?:,(?:1[0-6]|[0-9]))?\Z")
+
+
+def owl_extras(guard=None, rssi=None, rssi_instant=False):
+    """Extra flags for the customised OWL (owl-nexa), validated: -G start[,end] TU, -r dBm, -I."""
+    flags = []
+    if guard:
+        if not GUARD.fullmatch(guard):
+            raise ValueError("guardia non valida: usa INIZIO[,FINE] in TU, 0..16")
+        flags += ["-G", guard]
+    if rssi is not None:
+        if not -100 <= rssi <= -30:
+            raise ValueError("soglia RSSI non valida: -100..-30 dBm")
+        flags += ["-r", str(rssi)]
+    if rssi_instant:
+        flags.append("-I")
+    return flags
+
+
 NEXA_RESTARTS = 3
 NEXA_LEVELS = ("error", "warning", "info", "debug")
 
@@ -333,12 +353,15 @@ def open_monitor_socket(ifname):
 
 class Bridge:
     def __init__(self, iface, channel, guardian, active_only=False, fixed_radio=False, fixed_ack=False, go_anchor=False,
-                 max_seconds=DEFAULT_SECONDS, native_driver=False, data_rate=None, nexaawdl=None):
+                 max_seconds=DEFAULT_SECONDS, native_driver=False, data_rate=None, nexaawdl=None,
+                 owl_variant="modern", owl_extras=()):
         self.iface, self.channel, self.guardian = iface, channel, guardian
         self.max_seconds = max_seconds
         self.active_only = active_only
         self.native_driver = native_driver
         self.data_rate = data_rate
+        self.owl_variant = owl_variant    # "nexa": the customised OWL, with owl-modern as the fallback
+        self.owl_extras = list(owl_extras)
         self.nexaawdl = nexaawdl          # validated settings of the optional observer engine, or None
         self.nexa = None
         self.nexa_sock = None
@@ -448,21 +471,35 @@ class Bridge:
                 election.append("-A")
         if self.data_rate:
             election += ["-R", self.data_rate]
-        self.owl = subprocess.Popen([str(owl), "-i", "ldack0", "-c", str(self.channel), "-N", "-S", strategy, *election, "-vv"],
-                                    env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        self.awdl_owned = True
-        threading.Thread(target=self.read_owl, daemon=True).start()
-        for _ in range(100):
-            if STOP.is_set():
-                return
-            if self.owl.poll() is not None:
-                raise RuntimeError("OWL non si è avviato: consulta il registro nell'app.")
-            if Path("/sys/class/net/awdl0").exists():
-                command(["ip", "link", "set", "awdl0", "up"])
+        # The customised OWL first when asked for; if it cannot start, the shipped one takes over (same options).
+        candidates = [(owl, "owl-modern" if owl == modern else "owl", list(election))]
+        nexa = BASE / "backend/owl-nexa"
+        if self.owl_variant == "nexa" and nexa.is_file() and modern.is_file():
+            candidates.insert(0, (nexa, "owl-nexa", [*election, *self.owl_extras]))
+        for index, (binary, label, flags) in enumerate(candidates):
+            self.owl = subprocess.Popen([str(binary), "-i", "ldack0", "-c", str(self.channel), "-N", "-S", strategy, *flags, "-vv"],
+                                        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            self.awdl_owned = True
+            threading.Thread(target=self.read_owl, args=(self.owl,), daemon=True).start()
+            for _ in range(100):
+                if STOP.is_set():
+                    return
+                if self.owl.poll() is not None:
+                    break
+                if Path("/sys/class/net/awdl0").exists():
+                    command(["ip", "link", "set", "awdl0", "up"])
+                    break
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("OWL non ha creato l'interfaccia awdl0.")
+            if self.owl.poll() is None:
+                if label != "owl-modern" and label != "owl":
+                    emit("log", source="owl", message=f"Backend in uso: {label}")
                 break
-            time.sleep(0.1)
-        else:
-            raise RuntimeError("OWL non ha creato l'interfaccia awdl0.")
+            self.awdl_owned = False
+            if index + 1 >= len(candidates):
+                raise RuntimeError("OWL non si è avviato: consulta il registro nell'app.")
+            emit("log", source="owl", message=f"{label} non si è avviato: uso {candidates[index + 1][1]}.")
         for _ in range(50):
             addr = command(["ip", "-6", "address", "show", "dev", "awdl0"])
             if "inet6 fe80:" in addr and "tentative" not in addr:
@@ -572,9 +609,10 @@ class Bridge:
         except OSError as exc:
             emit("log", source="discovery", message="Diagnosi AWDL terminata: " + str(exc))
 
-    def read_owl(self):
+    def read_owl(self, process=None):
+        process = process or self.owl
         observed = False
-        for line in self.owl.stdout:
+        for line in process.stdout:
             if ("TRACE:" not in line and "DEBUG:" not in line) or "changed channel sequence" in line:
                 emit("log", source="owl", message=line.rstrip()[:1500])
             if "add peer" in line.lower() or (not observed and "awdl_action: receive" in line):
@@ -703,6 +741,11 @@ def main():
     p.add_argument("--fixed-radio", action="store_true")
     p.add_argument("--fixed-ack", action="store_true")
     p.add_argument("--go-anchor", action="store_true")
+    p.add_argument("--owl-variant", choices=OWL_VARIANTS, default="modern",
+                   help="nexa: the customised OWL (owl-nexa), falling back to owl-modern if it cannot start")
+    p.add_argument("--owl-guard", help="owl-nexa: unicast guards at the edges of a shared slot, START[,END] TU")
+    p.add_argument("--owl-rssi", type=int, help="owl-nexa: RSSI threshold for discovering a peer, dBm")
+    p.add_argument("--owl-rssi-instant", action="store_true", help="owl-nexa: judge each frame alone, as upstream")
     p.add_argument("--nexaawdl-dir", help="state directory of the optional NexaAWDL observer (enables it)")
     p.add_argument("--nexaawdl-code", help="directory that contains the nexaawdl package")
     p.add_argument("--nexaawdl-level", default="info", choices=NEXA_LEVELS)
@@ -739,6 +782,10 @@ def main():
                     raise RuntimeError(f"{name} è già in uso. Chiudi l’altra sessione AWDL.")
             GoAnchor(args.iface, phy, args.channel, command, emit).preflight()
         iface = trial.start() if trial else args.iface
+        try:
+            extras = owl_extras(args.owl_guard, args.owl_rssi, args.owl_rssi_instant)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
         nexa = None
         if args.nexaawdl_dir and args.nexaawdl_code:
             try:
@@ -746,7 +793,7 @@ def main():
             except (OSError, ValueError) as exc:
                 emit("log", source="nexaawdl", message=f"Motore NexaAWDL disattivato: {exc}")
         bridge = Bridge(iface, args.channel, args.guardian, active_only=False, fixed_radio=args.fixed_radio, fixed_ack=args.fixed_ack, go_anchor=args.go_anchor, max_seconds=args.max_seconds, native_driver=not args.driver_trial, data_rate=args.data_rate,
-                        nexaawdl=nexa)
+                        nexaawdl=nexa, owl_variant=args.owl_variant, owl_extras=extras)
         bridge.start()
         if not STOP.is_set():
             bridge.supervise()

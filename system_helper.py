@@ -37,11 +37,11 @@ MANIFEST = "helper-manifest.json"
 # Everything root_bridge.py reads or executes. Nothing else is installed.
 FILES = (
     "root_bridge.py", "p2p_anchor.py", "awdl_diag.py", "radio_compat.py",
-    "backend/owl-modern", "backend/owl",
+    "backend/owl-modern", "backend/owl", "backend/owl-nexa",
     "backend/driver-compat/manifest.json", "backend/driver-compat/mac80211.ko",
     "backend/driver-compat/mt792x-lib.ko", "backend/driver-compat/mt7921e.ko",
 )
-EXECUTABLE = {"backend/owl-modern", "backend/owl", ENTRY}
+EXECUTABLE = {"backend/owl-modern", "backend/owl", "backend/owl-nexa", ENTRY}
 USER = re.compile(r"[a-z_][a-z0-9_-]{0,31}\Z")
 MAX_FILE = 64 * 1024 * 1024
 

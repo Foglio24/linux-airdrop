@@ -459,14 +459,14 @@ class SettingsFile(unittest.TestCase):
     def test_round_trip(self):
         values = {"name": "Studio", "channel": 44, "wifi_direct": False, "background": False,
                   "auto_visible": True, "duration": "always", "remember": False, "auto_repair": False,
-                  "radio_ack": False, "nexa_enabled": False, "nexa_level": "debug"}
+                  "radio_ack": False, "nexa_enabled": False, "nexa_level": "debug", "owl_nexa": False}
         app_module.save_settings(values)
         self.assertEqual(app_module.load_settings(), values)
 
     def test_missing_corrupt_or_hostile_files_fall_back_to_defaults(self):
         defaults = {"name": "", "channel": 6, "wifi_direct": True, "background": True,
                     "auto_visible": False, "duration": "25m", "remember": True, "auto_repair": True,
-                    "radio_ack": True, "nexa_enabled": True, "nexa_level": "info"}
+                    "radio_ack": True, "nexa_enabled": True, "nexa_level": "info", "owl_nexa": True}
         self.assertEqual(app_module.load_settings(), defaults)
         app_module.SETTINGS.parent.mkdir(parents=True)
         for text in ("not json", "[1, 2]", json.dumps({"name": 7, "channel": 99, "wifi_direct": "yes", "background": None,

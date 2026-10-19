@@ -27,6 +27,8 @@ class FakeWorld:
         self.fail_command, self.fail_write = None, None
         self.process = None
         self.fail_popen = False
+        self.dead_binaries = set()      # binaries that exit at once without creating awdl0
+        self.spawns = []
         self.external_awdl_on_popen_failure = False
         self.active_monitor = True
 
@@ -64,6 +66,11 @@ class FakeWorld:
 
     def popen(self, *args, **kwargs):
         self.spawn_args = args[0]
+        self.spawns.append(args[0])
+        if args[0][0] in self.dead_binaries:
+            self.process = FakeProcess()
+            self.process.returncode = 1
+            return self.process
         if self.fail_popen:
             if self.external_awdl_on_popen_failure:
                 self.interfaces.add("awdl0")
@@ -313,6 +320,68 @@ class BridgeRollbackTests(unittest.TestCase):
         self.assertFalse(any("ldmon0" in c for c in self.world.commands))
         b.cleanup()
         self.restored()
+
+    def owl_bridge(self, **kwargs):
+        self.world.files["/bundle/backend/owl-modern"] = "modern binary"
+        self.world.files["/bundle/backend/owl-nexa"] = "customised binary"
+        return bridge_module.Bridge("wlan0", 6, 1234, fixed_radio=True, fixed_ack=True, **kwargs)
+
+    def test_the_customised_owl_is_used_with_its_validated_flags(self):
+        b = self.owl_bridge(owl_variant="nexa", owl_extras=bridge_module.owl_extras("2,1", -75, True))
+        b.start()
+        args = self.world.spawn_args
+        self.assertEqual(args[0], "/bundle/backend/owl-nexa")
+        self.assertEqual(args[args.index("-G") + 1], "2,1")
+        self.assertEqual(args[args.index("-r") + 1], "-75")
+        self.assertIn("-I", args)
+        for kept in ("-F", "-A", "-E", "-N", "-vv"):
+            self.assertIn(kept, args)                        # every existing option is still passed
+        b.cleanup()
+
+    def test_the_shipped_owl_stays_the_default(self):
+        b = self.owl_bridge()
+        b.start()
+        self.assertEqual(self.world.spawn_args[0], "/bundle/backend/owl-modern")
+        self.assertNotIn("-G", self.world.spawn_args)
+        b.cleanup()
+
+    def test_a_missing_customised_binary_falls_back_without_a_spawn(self):
+        b = self.owl_bridge(owl_variant="nexa")
+        del self.world.files["/bundle/backend/owl-nexa"]
+        b.start()
+        self.assertEqual([s[0] for s in self.world.spawns], ["/bundle/backend/owl-modern"])
+        b.cleanup()
+
+    def test_a_customised_owl_that_cannot_start_is_replaced_by_the_shipped_one(self):
+        b = self.owl_bridge(owl_variant="nexa", owl_extras=["-G", "1"])
+        self.world.dead_binaries.add("/bundle/backend/owl-nexa")
+        b.start()
+        self.assertEqual([s[0] for s in self.world.spawns], ["/bundle/backend/owl-nexa", "/bundle/backend/owl-modern"])
+        self.assertNotIn("-G", self.world.spawns[1])           # the fallback gets none of the new flags
+        self.assertIn("-F", self.world.spawns[1])
+        self.assertTrue(any(e[0] == "log" and "owl-nexa non si è avviato" in e[1].get("message", "")
+                            for e in self.world.events))
+        self.assertIn("ready", [e[0] for e in self.world.events])
+        b.cleanup()
+
+    def test_when_both_fail_the_session_fails_and_cleans_up(self):
+        b = self.owl_bridge(owl_variant="nexa")
+        self.world.dead_binaries.update(("/bundle/backend/owl-nexa", "/bundle/backend/owl-modern"))
+        with self.assertRaisesRegex(RuntimeError, "OWL non si è avviato"):
+            b.start()
+        b.cleanup()
+        self.assertEqual(self.world.interfaces, {"wlan0"})
+
+    def test_owl_flags_are_validated(self):
+        self.assertEqual(bridge_module.owl_extras(), [])
+        self.assertEqual(bridge_module.owl_extras("3"), ["-G", "3"])
+        self.assertEqual(bridge_module.owl_extras("0,16", -100, False), ["-G", "0,16", "-r", "-100"])
+        for guard in ("17", "-1", "1,2,3", "a", "1;rm", " 1", "1,", ",1", "100"):
+            with self.subTest(guard=guard), self.assertRaises(ValueError):
+                bridge_module.owl_extras(guard)
+        for rssi in (-101, -29, 0, 50):
+            with self.subTest(rssi=rssi), self.assertRaises(ValueError):
+                bridge_module.owl_extras(None, rssi)
 
     def test_modern_backend_uses_metric_election_and_keeps_channel_hopping(self):
         self.world.files["/bundle/backend/owl-modern"] = "modern binary"

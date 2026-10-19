@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 import radio_compat
@@ -162,7 +162,7 @@ SETTINGS = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
 def load_settings():
     """Small, validated preferences file. Anything unexpected falls back to the defaults."""
     defaults = {"name": "", "channel": 6, "wifi_direct": True, "background": True, "auto_visible": False, "duration": "25m",
-                "remember": True, "auto_repair": True, "radio_ack": True, "nexa_enabled": True, "nexa_level": "info"}
+                "remember": True, "auto_repair": True, "radio_ack": True, "nexa_enabled": True, "nexa_level": "info", "owl_nexa": True}
     try:
         saved = json.loads(SETTINGS.read_text())
     except (OSError, ValueError):
@@ -173,7 +173,7 @@ def load_settings():
         defaults["name"] = saved["name"].strip()[:64]
     if saved.get("channel") in CHANNELS:
         defaults["channel"] = saved["channel"]
-    for key in ("wifi_direct", "background", "auto_visible", "remember", "auto_repair", "radio_ack", "nexa_enabled"):
+    for key in ("wifi_direct", "background", "auto_visible", "remember", "auto_repair", "radio_ack", "nexa_enabled", "owl_nexa"):
         if isinstance(saved.get(key), bool):
             defaults[key] = saved[key]
     if saved.get("duration") in [key for key, _, _ in DURATIONS]:
@@ -227,6 +227,8 @@ class SendJob:
 
 class AirDrop(Adw.Application):
     data_rate = None   # OWL -R for data frames; None keeps OWL's default (12 Mbit/s)
+    owl_guard = None   # owl-nexa -G START[,END] in TU; None keeps its default (3,3)
+    owl_rssi = None    # owl-nexa -r dBm; None keeps its default (-80)
 
     def __init__(self, screenshot=None, activate_radio=False, fixed_radio=True, radio_channel=None, fixed_ack=None, go_anchor=None, background_start=False):
         # HANDLES_OPEN: "Invia con Linux AirDrop" in Files and a second launch with files reach the running instance.
@@ -246,6 +248,7 @@ class AirDrop(Adw.Application):
         self.auto_visible = saved["auto_visible"]
         self.duration = saved["duration"]
         # NexaAWDL: the observer engine started by the bridge (see nexaawdl/ and docs/NEXAAWDL.md).
+        self.owl_nexa = saved["owl_nexa"]       # the customised OWL (backend/owl-nexa); owl-modern if it cannot start
         self.nexa_enabled = saved["nexa_enabled"]
         self.nexa_level = saved["nexa_level"]
         self.nexa_dir = STATE / "nexaawdl"
@@ -438,7 +441,13 @@ class AirDrop(Adw.Application):
                                      use_markup=False)
         self.ack_row.set_active(self.radio_ack)
         self.ack_row.connect("notify::active", lambda row, _: (setattr(self, "radio_ack", row.get_active()), self.persist()))
-        for row in (self.name, self.go_row, self.channel, self.ack_row):
+        self.owl_row = Adw.SwitchRow(title="OWL ottimizzato",
+                                    subtitle="Versione di OWL con filtro del segnale più tollerante e statistiche di trasmissione. "
+                                             "Se non parte si usa quella di prima. Vale dalla prossima attivazione",
+                                    use_markup=False)
+        self.owl_row.set_active(self.owl_nexa)
+        self.owl_row.connect("notify::active", lambda row, _: (setattr(self, "owl_nexa", row.get_active()), self.persist()))
+        for row in (self.name, self.go_row, self.channel, self.ack_row, self.owl_row):
             options.add(row)
         content.append(options)
 
@@ -520,7 +529,7 @@ class AirDrop(Adw.Application):
         save_settings({"name": name, "channel": self.current_channel(), "wifi_direct": self.go_wanted,
                        "background": self.background, "auto_visible": self.auto_visible, "duration": self.duration,
                        "remember": self.remember, "auto_repair": self.auto_repair, "radio_ack": self.radio_ack,
-                       "nexa_enabled": self.nexa_enabled, "nexa_level": self.nexa_level})
+                       "nexa_enabled": self.nexa_enabled, "nexa_level": self.nexa_level, "owl_nexa": self.owl_nexa})
 
     def duration_changed(self, row, _):
         self.duration = DURATIONS[row.get_selected()][0]
@@ -731,6 +740,7 @@ class AirDrop(Adw.Application):
         self.channel.set_sensitive(not locked)
         self.go_row.set_sensitive(not locked)
         self.ack_row.set_sensitive(not locked)
+        self.owl_row.set_sensitive(not locked)
 
     def toast(self, text, button=None, action=None):
         item = Adw.Toast(title=text, use_markup=False)
@@ -930,6 +940,12 @@ class AirDrop(Adw.Application):
                 argv.append("--fixed-ack")
         if self.data_rate:
             argv += ["--data-rate", self.data_rate]
+        if self.owl_nexa:
+            argv += ["--owl-variant", "nexa"]
+            if self.owl_guard:
+                argv += ["--owl-guard", self.owl_guard]
+            if self.owl_rssi is not None:
+                argv += ["--owl-rssi", str(self.owl_rssi)]
         argv += self.nexa_arguments()
         self.bridge = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -1937,6 +1953,10 @@ if __name__ == "__main__":
     parser.add_argument("--no-fixed-ack", dest="fixed_ack", action="store_false", help="nessuna conferma radio")
     parser.add_argument("--data-rate", default=os.environ.get("LINUX_AIRDROP_RATE"),
                         help="velocità radio dei dati verso il telefono: 6..54 Mbit/s, mcsN o mcsN-sgi (predefinito 12)")
+    parser.add_argument("--owl-guard", default=os.environ.get("LINUX_AIRDROP_OWL_GUARD"), metavar="INIZIO[,FINE]",
+                        help="OWL ottimizzato: guardie ai bordi di una finestra condivisa, in TU (predefinito 3,3)")
+    parser.add_argument("--owl-rssi", type=int, default=None, metavar="DBM",
+                        help="OWL ottimizzato: soglia del segnale per scoprire un dispositivo (predefinito -80)")
     parser.add_argument("--fixed-radio", action="store_true", default=True)
     parser.add_argument("--channel-hopping", dest="fixed_radio", action="store_false")
     parser.add_argument("--channel", type=int, choices=CHANNELS, default=None)
@@ -1957,6 +1977,7 @@ if __name__ == "__main__":
         sys.exit(78)
     app = AirDrop(args.screenshot, args.activate, args.fixed_radio, args.channel, args.fixed_ack, args.go_anchor, args.background)
     app.data_rate = args.data_rate
+    app.owl_guard, app.owl_rssi = args.owl_guard, args.owl_rssi
     watch_signals(app)
     # Paths go to the running instance, if there is one: no second session is ever started.
     sys.exit(app.run([sys.argv[0], *(str(Path(f).expanduser().absolute()) for f in args.files)]))

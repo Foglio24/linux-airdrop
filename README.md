@@ -10,6 +10,19 @@ Native **AirDrop between Linux and iPhone/iPad** for PCs with a **MediaTek MT792
 
 Working on the tested machine, in both directions: an iPhone sends files to the PC (`/Discover`, `/Ask`, `/Upload`), and the PC sends files to the iPhone. The iPhone can stay on **Receiving Off** (*Ricezione disattivata*) while sending to the PC. See [`verification.json`](verification.json) for what was checked, what was not, and the known limitations.
 
+### What 1.3.1 changes: OWL core rewrite
+
+The app now includes `owl-nexa`, a refactor of OWL's receive, transmit, I/O and command-line paths. It validates
+frames before updating peer state, forwards exactly the decoded Ethernet length, preserves queued packets when the
+radio is busy, pauses host reads when queues are full, and shuts down cleanly. **OWL ottimizzato** selects it in
+*Visibilità*; `owl-modern` remains available as the startup fallback. The existing passwordless helper is refreshed
+on package upgrade.
+
+Verification: 130 OWL tests, three downstream C harnesses, 121 application integration tests, full AddressSanitizer
+and UndefinedBehaviorSanitizer checks, and recorded radio traffic replay. **No live iPhone/iPad transfer has yet
+been performed with this rewritten binary.** Details: [`docs/OWL-NEXA.md`](docs/OWL-NEXA.md) and
+[`docs/OWL-VERIFICATION.json`](docs/OWL-VERIFICATION.json).
+
 ### What 1.3 adds: NexaAWDL
 
 A new engine, `nexaawdl/`, observes and analyses the AWDL air next to OWL: it decodes the frames, follows each peer's
