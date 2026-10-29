@@ -135,7 +135,8 @@ class Idle(unittest.TestCase):
 
     def test_every_requested_area_has_a_check(self):
         ids = {c.id for c in self.world.check().values()}
-        self.assertTrue({"card", "kernel", "driver", "modules", "owl", "awdl", "p2p", "mdns", "bluetooth", "interface", "channel", "service"} <= ids)
+        self.assertTrue({"card", "kernel", "driver", "modules", "owl", "awdl", "p2p", "mdns", "bluetooth", "radio",
+                         "interface", "channel", "service"} <= ids)
 
     def test_missing_card_and_wrong_kernel_are_errors(self):
         world = self.world
@@ -158,6 +159,17 @@ class Idle(unittest.TestCase):
         self.assertEqual(self.world.check()["modules"].state, dg.ERROR)    # one patched, two original
         self.world.modules("patched")
         self.assertEqual(self.world.check()["modules"].state, dg.WARN)     # no session but still loaded
+
+    def test_wifi_radio_states(self):
+        world = self.world
+        self.assertEqual(world.check()["radio"].state, dg.OK)
+        world.write("sys/class/rfkill/rfkill1/type", "wlan\n")
+        world.write("sys/class/rfkill/rfkill1/soft", "1\n")
+        world.write("sys/class/rfkill/rfkill1/hard", "0\n")
+        self.assertEqual(world.check()["radio"].state, dg.WARN)
+        self.assertEqual(world.check(world.facts(session_active=True))["radio"].state, dg.ERROR)
+        world.write("sys/class/rfkill/rfkill1/hard", "1\n")
+        self.assertEqual(world.check()["radio"].state, dg.ERROR)
 
     def test_bluetooth_states(self):
         world = self.world

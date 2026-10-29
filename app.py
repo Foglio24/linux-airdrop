@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 import radio_compat
@@ -69,6 +69,21 @@ def radio_capability(iface):
 
 def driver_trial_available():
     return radio_compat.verify_legacy_bundle(BASE / "backend/driver-compat", platform.release()).verified
+
+
+def wifi_radio():
+    """'on', 'soft' or 'hard' from the kernel rfkill switches of the Wi-Fi radio."""
+    try:
+        for entry in (Path("/sys/class/rfkill")).iterdir():
+            if (entry / "type").read_text().strip() != "wlan":
+                continue
+            if (entry / "hard").read_text().strip() == "1":
+                return "hard"
+            if (entry / "soft").read_text().strip() == "1":
+                return "soft"
+    except OSError:
+        pass
+    return "on"
 
 
 def radio_inventory(iface):
@@ -884,6 +899,9 @@ class AirDrop(Adw.Application):
             self.user_stop = True
             self.stop_session()
             return
+        if wifi_radio() == "hard":
+            self.set_status("Il Wi-Fi è bloccato da un interruttore o dal firmware: riattivalo e riprova.", True)
+            return
         capabilities = replace(self.compat_capabilities, active_monitor=radio_capability(self.iface))
         self.compat_plan = radio_compat.select_plan(capabilities, self.compat_legacy)
         if not self.compat_plan.available:
@@ -918,7 +936,8 @@ class AirDrop(Adw.Application):
         self.lock_options(True)
         self.title.set_label("Attivazione…")
         if self.helper_ready():
-            self.subtitle.set_label("Preparazione della scheda Wi-Fi…")
+            self.subtitle.set_label("Wi-Fi disattivato: lo riattivo per la condivisione…" if wifi_radio() == "soft"
+                                    else "Preparazione della scheda Wi-Fi…")
             self.set_status("Attivazione senza password…", busy=True)
             # The root-owned entry point: nothing of the user's can have been swapped in.
             argv = ["pkexec", system_helper.helper_entry()]

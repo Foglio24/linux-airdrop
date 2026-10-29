@@ -4,7 +4,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(dirname "$here")
-version=${1:-1.3.1}
+version=${1:-1.3.2}
 out=${2:-"$root/dist"}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -60,7 +60,7 @@ open(os.path.join(doc, "third-party-licenses.txt"), "w").write(
     "full texts are in the matching *.dist-info directories and in backend/licenses):\n\n" + "\n".join(rows) + "\n")
 stamp = time.strftime("%a, %d %b %Y %H:%M:%S %z")
 with gzip.open(os.path.join(doc, "changelog.Debian.gz"), "wt") as f:
-    f.write(f"linux-airdrop ({version}) unstable; urgency=low\n\n  * Integrate owl-nexa with safer frame parsing, transmit retries,\n    bounded host reads, strict CLI validation and clean shutdown.\n  * Keep owl-modern as the startup fallback and refresh the configured helper.\n  * Include OWL sources, build manifest and offline verification report.\n\n"
+    f.write(f"linux-airdrop ({version}) unstable; urgency=low\n\n  * Enable a soft-blocked Wi-Fi radio (GNOME toggle / rfkill) for the session and restore it afterwards; refuse a hard block with a clear message.\n  * Show the Wi-Fi radio state in diagnostics.\n  * Integrate owl-nexa with safer frame parsing, transmit retries,\n    bounded host reads, strict CLI validation and clean shutdown.\n  * Keep owl-modern as the startup fallback and refresh the configured helper.\n  * Include OWL sources, build manifest and offline verification report.\n\n"
             f" -- Foglio24 <82967977+Foglio24@users.noreply.github.com>  {stamp}\n")
 PY
 cat > "$doc/copyright" <<'CR'

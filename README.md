@@ -10,7 +10,17 @@ Native **AirDrop between Linux and iPhone/iPad** for PCs with a **MediaTek MT792
 
 Working on the tested machine, in both directions: an iPhone sends files to the PC (`/Discover`, `/Ask`, `/Upload`), and the PC sends files to the iPhone. The iPhone can stay on **Receiving Off** (*Ricezione disattivata*) while sending to the PC. See [`verification.json`](verification.json) for what was checked, what was not, and the known limitations.
 
-### What 1.3.1 changes: OWL core rewrite
+### What 1.3.2 changes: Wi-Fi radio handling
+
+Some users turn the Wi-Fi radio off (GNOME/NetworkManager toggle) instead of just disconnecting
+from a network, because AirDrop needs the card exclusively. Until now that state made activation
+fail with `ip link set ... up: RTNETLINK answers: Operation not possible due to RF-kill`. 1.3.2
+detects it: if the radio is **soft-blocked** (software toggle), the privileged bridge turns it on
+for the session and puts it back at the end; if it is **hard-blocked** (physical switch or firmware),
+activation stops with a clear message. The Diagnostics page now shows the Wi-Fi radio state.
+The existing passwordless helper is refreshed on package upgrade.
+
+No changes to OWL, the driver modules or the AirDrop protocol.
 
 The app now includes `owl-nexa`, a refactor of OWL's receive, transmit, I/O and command-line paths. It validates
 frames before updating peer state, forwards exactly the decoded Ethernet length, preserves queued packets when the

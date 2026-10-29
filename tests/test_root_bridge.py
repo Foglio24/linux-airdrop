@@ -35,6 +35,12 @@ class FakeWorld:
     def path(self, value):
         return FakePath(self, value)
 
+    def wifi_radio(self, soft=False, hard=False):
+        self.files["/sys/class/rfkill/rfkill0/type"] = "wlan\n"
+        self.files["/sys/class/rfkill/rfkill0/name"] = "phy0\n"
+        self.files["/sys/class/rfkill/rfkill0/soft"] = "1\n" if soft else "0\n"
+        self.files["/sys/class/rfkill/rfkill0/hard"] = "1\n" if hard else "0\n"
+
     def command(self, args, check=True):
         args = tuple(args)
         self.commands.append(args)
@@ -119,6 +125,13 @@ class FakePath:
             self.world.fail_write = None
             raise OSError("Injected debugfs failure")
         self.world.files[str(self)] = text
+
+    def iterdir(self):
+        prefix = str(self.value).rstrip("/") + "/"
+        children = sorted({key[len(prefix):].split("/")[0] for key in self.world.files if key.startswith(prefix)})
+        if not children:
+            raise FileNotFoundError(str(self))
+        return [FakePath(self.world, prefix + child) for child in children]
 
 
 class FakeProcess:
@@ -240,6 +253,25 @@ class BridgeRollbackTests(unittest.TestCase):
         b.cleanup()
         self.assertEqual(self.mutations(), [])
         self.assertEqual(self.world.writes, [])
+
+    def test_disabled_radio_is_enabled_for_the_session_and_restored(self):
+        self.world.wifi_radio(soft=True)
+        b = self.bridge()
+        b.start()
+        self.assertEqual(self.world.files["/sys/class/rfkill/rfkill0/soft"], "0\n")
+        b.cleanup()
+        self.assertEqual(self.world.files["/sys/class/rfkill/rfkill0/soft"], "1\n")
+        self.restored()
+
+    def test_hard_blocked_radio_refused_without_any_mutation(self):
+        self.world.wifi_radio(hard=True)
+        b = self.bridge()
+        with self.assertRaisesRegex(RuntimeError, "interruttore"):
+            b.start()
+        b.cleanup()
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual(self.world.writes, [])
+        self.assertEqual(self.world.files["/sys/class/rfkill/rfkill0/soft"], "0\n")
 
     def test_unsupported_active_monitor_refused_without_any_mutation(self):
         self.world.active_monitor = False

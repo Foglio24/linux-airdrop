@@ -394,6 +394,24 @@ def check_all(system, facts, slow=None, base=None):
     else:
         checks.append(Check("bluetooth", "Bluetooth", OK, "Pronto" + (" · segnale di risveglio attivo" if ble else ""), [f"Adattatore: {adapters[0]}"]))
 
+    # --- Wi-Fi radio
+    wifi_block = []
+    for entry in system.listdir("sys/class/rfkill"):
+        if system.read(f"sys/class/rfkill/{entry}/type") == "wlan":
+            if system.read(f"sys/class/rfkill/{entry}/hard") == "1":
+                wifi_block.append((entry, "hard"))
+            elif system.read(f"sys/class/rfkill/{entry}/soft") == "1":
+                wifi_block.append((entry, "soft"))
+    names = ", ".join(name for name, _ in wifi_block)
+    if any(kind == "hard" for _, kind in wifi_block):
+        checks.append(Check("radio", "Radio Wi-Fi", ERROR, "Il Wi-Fi è bloccato da un interruttore o dal firmware", [f"rfkill: {names}"],
+                            "Riattiva il Wi-Fi con l’interruttore fisico o dal firmware, poi riprova."))
+    elif wifi_block:
+        checks.append(Check("radio", "Radio Wi-Fi", ERROR if active else WARN, "Il Wi-Fi è disattivato", [f"rfkill: {names}"],
+                            "All’attivazione l’app lo riattiva da sola; puoi anche accenderlo dalle impostazioni di Ubuntu."))
+    else:
+        checks.append(Check("radio", "Radio Wi-Fi", OK, "Attiva"))
+
     # --- selected interface
     index = None
     if card:

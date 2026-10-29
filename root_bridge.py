@@ -150,6 +150,36 @@ def suppress_monitor_tx_echo():
         raise RuntimeError("Impossibile configurare il monitor Wi-Fi senza eco TX: " + str(exc)) from exc
 
 
+def wifi_rfkill(phy, root=None):
+    """The rfkill switch of the selected phy: (path, soft, hard), or None.
+
+    A soft block is the GNOME/NetworkManager Wi-Fi toggle: the privileged
+    bridge can clear it for the session. A hard block belongs to a physical
+    switch or the firmware and must be cleared by the user.
+    """
+    root = Path("/sys/class/rfkill") if root is None else root
+    try:
+        entries = sorted(root.iterdir(), key=lambda entry: entry.name)
+    except OSError:
+        return None
+    fallback = None
+    for entry in entries:
+        try:
+            if (entry / "type").read_text().strip() != "wlan":
+                continue
+            name = (entry / "name").read_text().strip()
+            soft = (entry / "soft").read_text().strip() == "1"
+            hard = (entry / "hard").read_text().strip() == "1"
+        except OSError:
+            continue
+        found = (entry, soft, hard)
+        if name == phy:
+            return found
+        if fallback is None:
+            fallback = found
+    return fallback
+
+
 def inspect_interface(iface, require_active=True):
     if not re.fullmatch(r"[a-zA-Z0-9_-]{1,15}", iface):
         raise RuntimeError("Nome interfaccia non valido")
@@ -160,6 +190,9 @@ def inspect_interface(iface, require_active=True):
     phy = (device / "phy80211").resolve().name
     if not re.fullmatch(r"phy\d+", phy):
         raise RuntimeError("Scheda Wi-Fi non trovata")
+    blocked = wifi_rfkill(phy)
+    if blocked is not None and blocked[2]:
+        raise RuntimeError("Il Wi-Fi è disattivato da un interruttore o dal firmware: riattivalo e riprova.")
     info = command(["iw", "dev", iface, "info"])
     if not re.search(r"\btype managed\b", info):
         raise RuntimeError("La scheda Wi-Fi non è in modalità normale.")
@@ -377,6 +410,7 @@ class Bridge:
         self.nm_touched = False
         self.managed = None
         self.was_up = False
+        self.rfkill_unblocked = None
         self.awdl_owned = False
         self.native_cleanup_blocked = False
 
@@ -418,6 +452,18 @@ class Bridge:
         self.nm_touched = True
         command(["nmcli", "device", "set", self.iface, "managed", "no"])
         command(["ip", "link", "set", self.iface, "down"])
+        # The user may have switched Wi-Fi off instead of just disconnecting it.
+        # NetworkManager no longer owns the device, so clearing the soft block
+        # here cannot start a connection to a saved network.
+        blocked = wifi_rfkill(phy)
+        if blocked is not None and blocked[1]:
+            emit("status", message="Il Wi-Fi era disattivato: lo riattivo per la condivisione…")
+            knob = blocked[0] / "soft"
+            try:
+                knob.write_text("0\n")
+            except OSError as exc:
+                raise RuntimeError("Impossibile riattivare la radio Wi-Fi: " + str(exc)) from exc
+            self.rfkill_unblocked = knob
         # debugfs is normally mounted by Ubuntu. Do not remount system filesystems.
         debug = Path("/sys/kernel/debug/ieee80211") / phy / "mt76"
         for key in ("runtime-pm", "deep-sleep"):
@@ -720,6 +766,12 @@ class Bridge:
                 command(["nmcli", "device", "set", self.iface, "managed", self.managed])
             except Exception as exc:
                 emit("error", message="Ripristino Wi-Fi incompleto: " + str(exc))
+            if self.rfkill_unblocked is not None:
+                try:
+                    self.rfkill_unblocked.write_text("1\n")
+                except OSError as exc:
+                    emit("log", source="cleanup", message="Wi-Fi lasciato attivo: " + str(exc))
+                self.rfkill_unblocked = None
         emit("stopped")
 
 
